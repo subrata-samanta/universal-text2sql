@@ -115,4 +115,8 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    print("main")
+
+
+    print("new")
     main()
