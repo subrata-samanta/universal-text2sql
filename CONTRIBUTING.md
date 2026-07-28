@@ -67,6 +67,7 @@ pip install -e ".[openai]"        # langchain-openai, for the OpenAI LLM provide
 pip install -e ".[anthropic]"     # langchain-anthropic, for the Anthropic LLM provider
 pip install -e ".[ollama]"        # langchain-ollama, for the local Ollama LLM provider
 pip install -e ".[all-providers]" # openai + anthropic + ollama together
+pip install -e ".[notebook]"      # jupyter + ipykernel, to run notebooks/01_end_to_end_walkthrough.ipynb
 ```
 
 Each optional dependency is lazy-imported (inside the function that needs
