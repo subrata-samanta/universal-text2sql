@@ -11,10 +11,13 @@ Graph topology
       ▼
   classify_complexity    ← SIMPLE / MODERATE / COMPLEX routing (DIN-SQL-style)
       │
-      ▼
-  generate_sql           ← CoT + few-shot SQL generation (multi-candidate if complex)
-      │
-      ▼
+      ├─ COMPLEX + decomposition enabled ──► decompose_sql ──┐
+      │                                                       │
+      ▼                                                       │
+  generate_sql           ← CoT + few-shot SQL generation      │
+  (multi-candidate if complex)                                │
+      │                                                       │
+      ▼                                                       ▼
   select_best_candidate  ← self-consistency: execute candidates, majority vote
       │
       ▼
@@ -49,6 +52,7 @@ from langgraph.graph import END, START, StateGraph
 from universal_text2sql.agent.memory import QueryMemory
 from universal_text2sql.agent.nodes import (
     classify_complexity,
+    decompose_sql,
     execute_sql,
     format_answer,
     generate_sql,
@@ -71,6 +75,7 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_MAX_RETRIES = int(os.getenv("MAX_RETRIES", "3"))
 _DEFAULT_SELF_CONSISTENCY_SAMPLES = int(os.getenv("SELF_CONSISTENCY_SAMPLES", "1"))
+_DEFAULT_ENABLE_QUERY_DECOMPOSITION = os.getenv("ENABLE_QUERY_DECOMPOSITION", "false").lower() == "true"
 
 
 # ---------------------------------------------------------------------------
@@ -99,6 +104,22 @@ def _should_reflect_on_validation(state: AgentState) -> str:
     return "format_answer"
 
 
+def _should_decompose(state: AgentState, enable_query_decomposition: bool) -> str:
+    """After classify_complexity: route COMPLEX questions to decomposition when enabled.
+
+    Decomposition and self-consistency multi-candidate sampling are
+    mutually exclusive for a given question in this version (decomposition
+    already makes 1 + N_subquestions LLM calls; stacking self-consistency
+    on top would multiply cost further with unclear ROI and would require
+    voting over composed CTE queries) -- when both COMPLEX and enabled,
+    decomposition takes the COMPLEX branch instead of generate_sql's
+    multi-candidate sampling.
+    """
+    if enable_query_decomposition and state.get("complexity", "").upper() == "COMPLEX":
+        return "decompose_sql"
+    return "generate_sql"
+
+
 # ---------------------------------------------------------------------------
 # Graph factory
 # ---------------------------------------------------------------------------
@@ -114,6 +135,7 @@ def build_graph(
     metadata_enricher: MetadataEnricher | None = None,
     grounding_index: ValueGroundingIndex | None = None,
     self_consistency_samples: int = _DEFAULT_SELF_CONSISTENCY_SAMPLES,
+    enable_query_decomposition: bool = _DEFAULT_ENABLE_QUERY_DECOMPOSITION,
 ) -> Any:
     """Build and compile the LangGraph StateGraph.
 
@@ -138,6 +160,11 @@ def build_graph(
             questions classified as at least ``MODERATE`` complexity (``1``
             disables self-consistency and matches the original single-shot
             behaviour).
+        enable_query_decomposition: Route COMPLEX questions through
+            ``decompose_sql`` (DIN-SQL-style sub-question decomposition +
+            CTE composition) instead of ``generate_sql``. Defaults to the
+            ``ENABLE_QUERY_DECOMPOSITION`` env var (``False`` -- an opt-in
+            strategy, same posture as self-consistency).
 
     Returns:
         A compiled LangGraph runnable.
@@ -159,12 +186,16 @@ def build_graph(
         grounding_index=grounding_index,
     )
     _classify_complexity = functools.partial(classify_complexity, llm=llm)
+    _should_decompose_bound = functools.partial(
+        _should_decompose, enable_query_decomposition=enable_query_decomposition
+    )
     _generate_sql = functools.partial(
         generate_sql,
         llm=llm,
         db_type=db_type,
         self_consistency_samples=self_consistency_samples,
     )
+    _decompose_sql = functools.partial(decompose_sql, llm=llm, db_type=db_type)
     _select_best_candidate = functools.partial(select_best_candidate, connector=connector)
     _execute_sql = functools.partial(execute_sql, connector=connector)
     _validate_result = functools.partial(validate_result, llm=llm)
@@ -178,6 +209,7 @@ def build_graph(
     builder.add_node("select_schema", _select_schema)
     builder.add_node("classify_complexity", _classify_complexity)
     builder.add_node("generate_sql", _generate_sql)
+    builder.add_node("decompose_sql", _decompose_sql)
     builder.add_node("select_best_candidate", _select_best_candidate)
     builder.add_node("execute_sql", _execute_sql)
     builder.add_node("validate_result", _validate_result)
@@ -188,7 +220,15 @@ def build_graph(
     # Edges
     builder.add_edge(START, "select_schema")
     builder.add_edge("select_schema", "classify_complexity")
-    builder.add_edge("classify_complexity", "generate_sql")
+    builder.add_conditional_edges(
+        "classify_complexity",
+        _should_decompose_bound,
+        {
+            "decompose_sql": "decompose_sql",
+            "generate_sql": "generate_sql",
+        },
+    )
+    builder.add_edge("decompose_sql", "select_best_candidate")
     builder.add_edge("generate_sql", "select_best_candidate")
     builder.add_edge("select_best_candidate", "execute_sql")
     builder.add_conditional_edges(
@@ -233,6 +273,7 @@ def run_query(
     metadata_enricher: MetadataEnricher | None = None,
     grounding_index: ValueGroundingIndex | None = None,
     self_consistency_samples: int = _DEFAULT_SELF_CONSISTENCY_SAMPLES,
+    enable_query_decomposition: bool = _DEFAULT_ENABLE_QUERY_DECOMPOSITION,
 ) -> dict[str, Any]:
     """Run a single natural language question through the agent.
 
@@ -248,6 +289,7 @@ def run_query(
         metadata_enricher=metadata_enricher,
         grounding_index=grounding_index,
         self_consistency_samples=self_consistency_samples,
+        enable_query_decomposition=enable_query_decomposition,
     )
 
     initial_state: AgentState = {
@@ -260,6 +302,8 @@ def run_query(
         "grounding_hints": "",
         "complexity": "",
         "sql_candidates": [],
+        "sub_questions": [],
+        "decomposition_steps": [],
         "few_shot_examples": [],
         "generated_sql": "",
         "execution_result": None,

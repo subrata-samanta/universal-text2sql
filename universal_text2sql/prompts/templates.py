@@ -147,6 +147,75 @@ Classification:""",
 )
 
 # ---------------------------------------------------------------------------
+# Query decomposition (DIN-SQL-style, for COMPLEX questions)
+# ---------------------------------------------------------------------------
+# Rather than asking the LLM for one big query in a single shot, COMPLEX
+# questions can be broken into an ordered chain of simpler sub-questions,
+# each generating its own SQL fragment (chained via CTEs) -- mirroring
+# DIN-SQL's decomposition step. See agent.nodes.decompose_sql.
+
+QUERY_DECOMPOSITION_PROMPT = ChatPromptTemplate.from_messages(
+    [
+        SystemMessagePromptTemplate.from_template(_SYSTEM_BASE),
+        (
+            "human",
+            """## Database Schema
+{schema_ddl}
+
+{kg_context}
+
+{business_glossary}
+
+{grounding_hints}
+
+## Question
+{question}
+
+This question is complex enough to benefit from decomposition. Break it into an ordered list of \
+simpler sub-questions, each building on the results of the ones before it, such that answering \
+them in order and combining the results answers the original question. For example, "top 3 \
+customers by total spend" could decompose into ["compute each customer's total spend", \
+"rank customers by that total spend, descending", "return the top 3 ranked customers"].
+
+Respond with ONLY a JSON array of strings (no markdown fences, no commentary), 2 to 5 items, \
+each a short, self-contained sub-question:
+
+JSON:""",
+        ),
+    ]
+)
+
+SQL_SUBQUERY_PROMPT = ChatPromptTemplate.from_messages(
+    [
+        SystemMessagePromptTemplate.from_template(_SYSTEM_BASE),
+        (
+            "human",
+            """## Database Schema
+{schema_ddl}
+
+{kg_context}
+
+{business_glossary}
+
+{grounding_hints}
+
+## Original Question
+{question}
+
+## Prior Steps (available as CTEs you may reference like tables)
+{prior_steps}
+
+## Current Sub-question
+{sub_question}
+
+{step_instructions}
+
+SQL:""",
+        ),
+    ]
+)
+
+# ---------------------------------------------------------------------------
 # Automatic metadata / business glossary generation
 # ---------------------------------------------------------------------------
 # The agent must work against databases it has never seen, so it builds its
@@ -260,3 +329,17 @@ def build_column_samples_block(schema_tables: dict) -> str:
                 samples = ", ".join(str(v) for v in col.sample_values[:3])
                 lines.append(f"  {table_name}.{col.name}: [{samples}]")
     return "\n".join(lines) if lines else "No sample values available."
+
+
+def build_cte_block(steps: list[dict[str, str]]) -> str:
+    """Render already-generated decomposition steps as a "Prior Steps" block.
+
+    Each *step* is a ``{"sub_question", "sql_fragment"}`` dict, in order.
+    Returns a placeholder string when *steps* is empty (the first step).
+    """
+    if not steps:
+        return "(none yet — this is the first step)"
+    parts = []
+    for i, step in enumerate(steps, 1):
+        parts.append(f"step_{i} -- {step['sub_question']}\nAS (\n{step['sql_fragment']}\n)")
+    return "\n\n".join(parts)

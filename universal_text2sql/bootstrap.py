@@ -53,6 +53,7 @@ class AgentContext:
     llm: LLMRunnable | None = None
     max_retries: int = 3
     self_consistency_samples: int = 1
+    enable_query_decomposition: bool = False
 
     def ask(self, question: str) -> dict[str, Any]:
         """Run a single natural language question through the agent graph."""
@@ -67,6 +68,7 @@ class AgentContext:
             metadata_enricher=self.metadata_enricher,
             grounding_index=self.grounding_index,
             self_consistency_samples=self.self_consistency_samples,
+            enable_query_decomposition=self.enable_query_decomposition,
         )
 
     def describe_knowledge_graph(self) -> str:
@@ -101,6 +103,7 @@ def bootstrap(
     seed_demo: bool = True,
     max_retries: int | None = None,
     self_consistency_samples: int | None = None,
+    enable_query_decomposition: bool | None = None,
     read_only: bool | None = None,
 ) -> AgentContext:
     """Connect to *any* SQLAlchemy-supported database and prepare the agent.
@@ -134,6 +137,12 @@ def bootstrap(
         self_consistency_samples: SQL candidates sampled for non-trivial
             questions. Defaults to ``SELF_CONSISTENCY_SAMPLES`` (``1``,
             i.e. self-consistency disabled, since it multiplies LLM calls).
+        enable_query_decomposition: Route COMPLEX questions through
+            DIN-SQL-style sub-question decomposition + CTE composition
+            instead of single-shot generation. Defaults to the
+            ``ENABLE_QUERY_DECOMPOSITION`` env var (``False``, an opt-in
+            strategy -- mutually exclusive with self-consistency sampling
+            for a given question).
         read_only: Whether the connector enforces read-only SQL (blocking
             LLM-generated INSERT/UPDATE/DELETE/DDL). Defaults to the
             ``SQL_READ_ONLY`` env var (``True``) — see
@@ -185,6 +194,11 @@ def bootstrap(
         if self_consistency_samples is not None
         else int(os.getenv("SELF_CONSISTENCY_SAMPLES", "1"))
     )
+    resolved_decomposition = (
+        enable_query_decomposition
+        if enable_query_decomposition is not None
+        else os.getenv("ENABLE_QUERY_DECOMPOSITION", "false").lower() == "true"
+    )
 
     return AgentContext(
         connector=connector,
@@ -196,6 +210,7 @@ def bootstrap(
         llm=llm,
         max_retries=resolved_max_retries,
         self_consistency_samples=resolved_samples,
+        enable_query_decomposition=resolved_decomposition,
     )
 
 

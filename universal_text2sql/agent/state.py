@@ -43,6 +43,12 @@ class AgentState(TypedDict):
     # Candidate SQL queries generated this turn (self-consistency sampling)
     sql_candidates: list[str]
 
+    # Ordered sub-questions from query decomposition (DIN-SQL-style), when used
+    sub_questions: list[str]
+
+    # Per-sub-question {"sub_question", "sql_fragment"} pairs from decomposition
+    decomposition_steps: list[dict[str, str]]
+
     # Generated SQL query (current attempt / selected best candidate)
     generated_sql: str
 
