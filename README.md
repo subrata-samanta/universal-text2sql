@@ -51,53 +51,46 @@ object both the CLI and the Streamlit UI drive.
 
 ```mermaid
 flowchart TB
-    subgraph entry["Entry points"]
-        CLI["main.py (CLI)"]
-        UI["app.py (Streamlit UI)"]
-        LIB["Library caller\n(your own script)"]
-    end
+    CLI["main.py (CLI)"] --> CONN
+    UI["app.py (Streamlit UI)"] --> CONN
+    LIB["Library caller<br/>(your own script)"] --> CONN
 
-    CLI --> BOOT
-    UI --> BOOT
-    LIB --> BOOT
-
-    subgraph BOOT["bootstrap() → AgentContext"]
+    subgraph BOOT["bootstrap() builds an AgentContext"]
         direction TB
-        CONN["DatabaseConnector\n(any SQLAlchemy URL)"]
-        DISC["SchemaDiscovery\ntables · columns · PK/FK · samples"]
-        KG["SchemaKnowledgeGraph\ndeclared + inferred joins"]
-        META["MetadataEnricher\nheuristic + LLM glossary (cached)"]
-        MEM["QueryMemory\nRL-weighted few-shot store"]
-        CONN --> DISC --> KG
-        DISC --> META
+        CONN["DatabaseConnector<br/>(any SQLAlchemy URL)"] --> DISC["SchemaDiscovery<br/>tables / columns / PK-FK / samples"]
+        DISC --> KG["SchemaKnowledgeGraph<br/>declared + inferred joins"]
+        DISC --> META["MetadataEnricher<br/>heuristic + LLM glossary, cached"]
+        MEM["QueryMemory<br/>RL-weighted few-shot store"]
     end
 
-    BOOT --> CTX["AgentContext.ask(question)"]
-    CTX --> GRAPH["LangGraph agent\n(see node diagram below)"]
-    GRAPH --> DB[(Target Database)]
-    GRAPH --> LLM["Groq LLM\n(ChatGroq)"]
+    KG --> CTX["AgentContext.ask(question)"]
+    META --> CTX
+    MEM --> CTX
+    CTX --> GRAPH["LangGraph agent<br/>(see node diagram below)"]
+    GRAPH --> DB[("Target Database")]
+    GRAPH --> LLMBOX["Groq LLM (ChatGroq)"]
     GRAPH --> MEM
-    GRAPH --> ANSWER["final_answer + generated_sql\n+ execution_result + trace"]
+    GRAPH --> ANSWER["final_answer + generated_sql<br/>+ execution_result + trace"]
 ```
 
 ### Agent graph (per-question execution)
 
 ```mermaid
 flowchart TD
-    START(["question in"]) --> SEL[select_schema]
-    SEL -->|"TF-IDF semantic ranking\n+ KG join context\n+ glossary lookup"| CLS[classify_complexity]
+    QIN(["question in"]) --> SEL[select_schema]
+    SEL -->|"TF-IDF semantic ranking<br/>+ KG join context<br/>+ glossary lookup"| CLS[classify_complexity]
     CLS -->|"SIMPLE / MODERATE / COMPLEX"| GEN[generate_sql]
-    GEN -->|"1 candidate if SIMPLE,\nN candidates otherwise"| VOTE[select_best_candidate]
-    VOTE -->|"executes every candidate,\nmajority-result wins"| EXEC[execute_sql]
+    GEN -->|"1 candidate if SIMPLE,<br/>N candidates otherwise"| VOTE[select_best_candidate]
+    VOTE -->|"executes every candidate,<br/>majority-result wins"| EXEC[execute_sql]
     EXEC -->|error| REFLECT[reflect]
     EXEC -->|ok| VALIDATE[validate_result]
     VALIDATE -->|INVALID| REFLECT
-    REFLECT -->|"corrected SQL\n(retry_count += 1)"| EXEC
+    REFLECT -->|"corrected SQL<br/>retry_count += 1"| EXEC
     VALIDATE -->|VALID| FORMAT[format_answer]
     EXEC -->|"max retries reached"| FORMAT
     VALIDATE -->|"max retries reached"| FORMAT
     FORMAT --> STORE[store_memory]
-    STORE --> END(["final_answer out"])
+    STORE --> QOUT(["final_answer out"])
 
     style SEL fill:#e8f0fe,stroke:#4285f4
     style CLS fill:#e8f0fe,stroke:#4285f4
