@@ -21,39 +21,128 @@ builds its own knowledge graph, and writes its own business glossary.
 
 ## Architecture
 
+The system is organised into four layers. Layers 1–3 run **once per
+database** (at bootstrap time) and are cached; layer 4 runs **once per
+question**. This separation is what makes the agent "universal" — everything
+dataset-specific is *derived automatically* instead of hand-configured.
+
 ```
-START
-  │
-  ▼
-select_schema        ← semantic (TF-IDF) schema linking + knowledge-graph join context + glossary
-  │
-  ▼
-classify_complexity  ← SIMPLE / MODERATE / COMPLEX routing
-  │
-  ▼
-generate_sql         ← CoT + few-shot generation; samples multiple candidates for non-trivial questions
-  │
-  ▼
-select_best_candidate← self-consistency: executes every candidate, majority vote wins
-  │
-  ▼
-execute_sql          ← run against live database via SQLAlchemy
-  │
-  ├─ error ──► reflect ──► execute_sql   (up to MAX_RETRIES self-reflection loops)
-  │
-  ▼
-validate_result      ← LLM checks whether the result actually answers the question
-  │
-  ├─ invalid ──► reflect ──► execute_sql
-  │
-  ▼
-format_answer        ← convert DataFrame → natural language answer
-  │
-  ▼
-store_memory         ← RL reward: reward = 1 / (1 + retry_count); save for few-shot
-  │
-  ▼
-END
+┌───────────────────────────────────────────────────────────────────────┐
+│ Layer 4 · Per-question agent graph      (LangGraph, universal_text2sql/agent/) │
+│   schema linking → complexity routing → SQL generation → self-      │
+│   consistency voting → execution → validation → reflection → answer  │
+├───────────────────────────────────────────────────────────────────────┤
+│ Layer 3 · Semantic layer                (universal_text2sql/knowledge/, retrieval/) │
+│   knowledge graph (joins) · business glossary (meaning) · TF-IDF index │
+├───────────────────────────────────────────────────────────────────────┤
+│ Layer 2 · Schema discovery              (universal_text2sql/database/schema.py) │
+│   tables, columns, types, PK/FK, row counts, sample values             │
+├───────────────────────────────────────────────────────────────────────┤
+│ Layer 1 · Universal connector           (universal_text2sql/database/connector.py) │
+│   any SQLAlchemy engine — SQLite / PostgreSQL / MySQL / ...            │
+└───────────────────────────────────────────────────────────────────────┘
+```
+
+All four layers are assembled by a single call, `bootstrap()` (see
+`universal_text2sql/bootstrap.py`), which returns an `AgentContext` — the
+object both the CLI and the Streamlit UI drive.
+
+### System diagram
+
+```mermaid
+flowchart TB
+    CLI["main.py (CLI)"] --> CONN
+    UI["app.py (Streamlit UI)"] --> CONN
+    LIB["Library caller<br/>(your own script)"] --> CONN
+
+    subgraph BOOT["bootstrap() builds an AgentContext"]
+        direction TB
+        CONN["DatabaseConnector<br/>(any SQLAlchemy URL)"] --> DISC["SchemaDiscovery<br/>tables / columns / PK-FK / samples"]
+        DISC --> KG["SchemaKnowledgeGraph<br/>declared + inferred joins"]
+        DISC --> META["MetadataEnricher<br/>heuristic + LLM glossary, cached"]
+        MEM["QueryMemory<br/>RL-weighted few-shot store"]
+    end
+
+    KG --> CTX["AgentContext.ask(question)"]
+    META --> CTX
+    MEM --> CTX
+    CTX --> GRAPH["LangGraph agent<br/>(see node diagram below)"]
+    GRAPH --> DB[("Target Database")]
+    GRAPH --> LLMBOX["Groq LLM (ChatGroq)"]
+    GRAPH --> MEM
+    GRAPH --> ANSWER["final_answer + generated_sql<br/>+ execution_result + trace"]
+```
+
+### Agent graph (per-question execution)
+
+```mermaid
+flowchart TD
+    QIN(["question in"]) --> SEL[select_schema]
+    SEL -->|"TF-IDF semantic ranking<br/>+ KG join context<br/>+ glossary lookup"| CLS[classify_complexity]
+    CLS -->|"SIMPLE / MODERATE / COMPLEX"| GEN[generate_sql]
+    GEN -->|"1 candidate if SIMPLE,<br/>N candidates otherwise"| VOTE[select_best_candidate]
+    VOTE -->|"executes every candidate,<br/>majority-result wins"| EXEC[execute_sql]
+    EXEC -->|error| REFLECT[reflect]
+    EXEC -->|ok| VALIDATE[validate_result]
+    VALIDATE -->|INVALID| REFLECT
+    REFLECT -->|"corrected SQL<br/>retry_count += 1"| EXEC
+    VALIDATE -->|VALID| FORMAT[format_answer]
+    EXEC -->|"max retries reached"| FORMAT
+    VALIDATE -->|"max retries reached"| FORMAT
+    FORMAT --> STORE[store_memory]
+    STORE --> QOUT(["final_answer out"])
+
+    style SEL fill:#e8f0fe,stroke:#4285f4
+    style CLS fill:#e8f0fe,stroke:#4285f4
+    style GEN fill:#fef7e0,stroke:#f9ab00
+    style VOTE fill:#fef7e0,stroke:#f9ab00
+    style REFLECT fill:#fce8e6,stroke:#ea4335
+```
+
+Every node is a plain function `(state, **deps) -> partial_state_update`
+(`universal_text2sql/agent/nodes.py`); `agent/graph.py` binds dependencies via
+`functools.partial` and wires the nodes into a LangGraph `StateGraph` over
+the `AgentState` TypedDict (`agent/state.py`). State flows through the whole
+graph as one dict that each node reads from and merges updates into —
+there's no hidden state anywhere else.
+
+### Request lifecycle (sequence)
+
+```mermaid
+sequenceDiagram
+    participant U as User
+    participant C as AgentContext
+    participant G as LangGraph
+    participant K as KnowledgeGraph/Glossary
+    participant L as Groq LLM
+    participant D as Database
+
+    U->>C: ask("top 3 products by revenue")
+    C->>G: run_query(question, ...)
+    G->>K: rank tables (TF-IDF) + join paths + glossary
+    K-->>G: relevant_tables, kg_context, business_glossary
+    G->>L: classify complexity
+    L-->>G: "MODERATE"
+    G->>L: generate SQL (N candidates if non-trivial)
+    L-->>G: candidate SQL(s)
+    loop self-consistency (N > 1)
+        G->>D: execute candidate
+        D-->>G: result rows
+    end
+    G->>G: vote → winning SQL
+    G->>D: execute winning SQL
+    D-->>G: result rows / error
+    alt execution error
+        G->>L: reflect on error
+        L-->>G: corrected SQL
+        G->>D: re-execute
+    end
+    G->>L: validate result answers the question
+    L-->>G: VALID / INVALID
+    G->>L: format natural-language answer
+    L-->>G: final_answer
+    G->>C: store successful query in memory (reward-weighted)
+    C-->>U: {final_answer, generated_sql, execution_result, trace}
 ```
 
 ### State-of-the-art techniques implemented
@@ -73,6 +162,136 @@ pipelines) adapted to run against an arbitrary, previously-unseen database:
 | **Self-reflection** | Execution-guided error correction | Error + previous SQL → corrected SQL loop (configurable retries), now with knowledge-graph join context in the correction prompt |
 | **RL-inspired few-shot memory** | Reward-weighted example replay | `reward = 1/(1+retries)` weights memory entries; zero-retry queries surface first, retrieved via the same TF-IDF-flavoured word-overlap scoring |
 | **Result validation** | Self-verification | Separate LLM call checks whether the answer actually makes sense |
+
+---
+
+## Component deep-dive
+
+### Layer 1 — `database/connector.py`: universal connector
+
+`DatabaseConnector` wraps a single SQLAlchemy `Engine` and exposes only the
+primitives the rest of the system needs: `execute_query` (→ DataFrame),
+`get_table_names`, `get_column_info`, `get_foreign_keys`, `get_sample_rows`.
+Because everything above this layer only talks to these five methods, adding
+support for a new SQL dialect is a connection-string change, not a code
+change — anything SQLAlchemy has a dialect for (SQLite, PostgreSQL, MySQL,
+Snowflake, BigQuery, ...) works without touching the agent.
+
+### Layer 2 — `database/schema.py`: schema discovery
+
+`SchemaDiscovery.discover()` introspects the live database once (via
+SQLAlchemy's `inspect()`) and materialises a `DatabaseSchema`: every table's
+columns (name, type, nullability, PK), declared foreign keys, row count, and
+a handful of sample values per column. This is the *raw* metadata layer —
+purely structural, no semantics yet. `DatabaseSchema.to_ddl()` / `subset_ddl()`
+render it back into `CREATE TABLE` text for prompts.
+
+### Layer 3 — the semantic layer (what makes it "universal")
+
+This is the layer that lets the agent work on a database it has never seen,
+without a human writing a data dictionary first.
+
+**`knowledge/graph.py` — `SchemaKnowledgeGraph`**
+
+A `networkx.MultiDiGraph` with two node kinds (`table:<name>`,
+`column:<table>.<name>`) and four edge kinds:
+
+| Edge kind | Meaning | How it's found |
+|---|---|---|
+| `has_column` | structural table → column edge | direct from schema |
+| `foreign_key` | declared relationship | SQLAlchemy FK constraints |
+| `inferred_fk` | *undeclared* relationship | naming convention: a non-PK column ending in `_id`/`Id` is matched against singular/plural table names and their primary key (handles the extremely common case of FK-less exports, e.g. denormalised CSV-backed SQLite dumps) |
+| `semantic_sibling` | same column name in ≥2 tables | candidate join key / duplicated concept (e.g. two `email` columns) |
+
+A second, undirected **table-level projection** (`_table_graph`) is
+maintained alongside the column graph purely for path-finding:
+`find_join_path(a, b)` runs `networkx.shortest_path` over it to produce the
+exact `A.col = B.col` hops connecting two tables — including tables with
+*no* direct relationship, by routing through an intermediate table (e.g.
+`order_items` → `customers` via `orders`). `get_join_paths_for_tables(...)`
+extends this to a whole set of relevant tables with a cheap greedy
+Steiner-tree approximation. `describe()` renders the result as plain text
+that gets injected straight into the SQL generation/reflection prompts, so
+the LLM is told the exact join columns instead of having to guess them from
+a DDL dump.
+
+**`knowledge/metadata.py` — `MetadataEnricher`**
+
+Two-tier metadata generation:
+
+1. **Heuristic pass (always on, zero cost):** identifiers are split on
+   `snake_case`/`camelCase` boundaries into human-readable phrases; role is
+   inferred from primary-key/foreign-key status and sample values (e.g.
+   `customer_id` → *"Reference to a customer record (foreign key)."*).
+2. **LLM pass (optional, cached):** one call per table sends its DDL +
+   sample values to the configured LLM and asks for a JSON object —
+   table description, table synonyms, and per-column `{meaning, synonyms}`.
+   Results are merged over the heuristic baseline and written to
+   `METADATA_CACHE_DIR/<schema-signature-hash>.json`, so re-running against
+   the same database is free after the first pass, and a schema change
+   (new/renamed column) invalidates only that database's cache entry.
+
+The combined result is rendered by `glossary_block()` into a "Business
+Glossary" prompt section — this is what lets a question about *"revenue"*
+resolve to a column literally named `total_amount`.
+
+**`retrieval/semantic.py` — `SemanticIndex`**
+
+A small, dependency-free TF-IDF vector space model (pure Python — no numpy
+matrix, no sklearn, no embedding API): term frequencies × inverse document
+frequency, cosine similarity via sparse dot products over `Counter` objects.
+It's deliberately not a neural embedding model — schema/glossary text and
+questions are short, so classic TF-IDF captures most of the useful signal
+while staying deterministic (important for tests) and avoiding an extra API
+dependency (Groq doesn't offer embeddings). It's used in two places:
+`DatabaseSchema.get_relevant_tables_semantic()` (schema linking — ranks
+tables by similarity of their name/description/columns/glossary/samples
+against the question, falling back to plain keyword overlap if nothing
+scores above zero) and, unchanged from the original design, `QueryMemory`'s
+few-shot retrieval.
+
+### Layer 4 — the per-question agent (`agent/`)
+
+| Node | Reads | Produces | Notes |
+|---|---|---|---|
+| `select_schema` | question, schema, KG, glossary | `relevant_tables`, `schema_context`, `kg_context`, `business_glossary`, `few_shot_examples` | semantic ranking with keyword-overlap fallback |
+| `classify_complexity` | question, `schema_context` | `complexity` | one LLM call, defaults to `MODERATE` on an unparseable response |
+| `generate_sql` | all of the above | `generated_sql`, `sql_candidates` | 1 candidate unless `complexity != SIMPLE` **and** `self_consistency_samples > 1`; duplicate candidates are deduplicated |
+| `select_best_candidate` | `sql_candidates` | `generated_sql` | no-op when there's only one candidate; otherwise executes every candidate and keeps the SQL whose *result* the largest group of candidates agree on (order-independent row/column signature) |
+| `execute_sql` | `generated_sql` | `execution_result` / `execution_error` | the single source of truth for what actually ran |
+| `reflect` | error or invalid verdict, previous SQL, KG context | corrected `generated_sql`, `retry_count += 1` | loops back to `execute_sql` up to `MAX_RETRIES` |
+| `validate_result` | question, SQL, result preview | `validation_verdict` | second LLM call, catches "ran fine but answers the wrong question" |
+| `format_answer` | result preview | `final_answer` | DataFrame → natural language |
+| `store_memory` | `success`, `generated_sql` | — | writes to `QueryMemory` with `reward = 1/(1+retry_count)` |
+
+### Why these design choices
+
+- **Two-tier metadata (heuristic + optional LLM)** — the agent must be
+  useful with *no* LLM configured yet (e.g. `main.py --graph` / `--glossary`
+  work without `GROQ_API_KEY`), and must not force an LLM call per column on
+  every bootstrap of a database it has already seen — hence heuristics
+  always run, the LLM pass is opt-in and cached per table.
+- **TF-IDF instead of embeddings** — keeps the project dependency-light
+  (no torch/sentence-transformers) and deterministic for tests, at the cost
+  of missing pure synonym matches the glossary doesn't already cover — an
+  acceptable trade-off given the glossary pass exists specifically to close
+  that gap.
+- **Self-consistency gated by complexity, not always-on** — sampling N
+  candidates multiplies LLM calls by N; gating it behind `classify_complexity`
+  means simple lookups (the majority of real usage) stay single-shot, and the
+  extra cost only applies where it measurably helps (multi-join / aggregation
+  questions).
+- **`select_best_candidate` only picks the winning SQL text, not its
+  execution result** — `execute_sql` still re-runs the chosen query. This
+  keeps `execute_sql` the single place that owns `execution_result`/
+  `execution_error`, so the reflect/validate loop downstream doesn't need to
+  know whether self-consistency ran at all.
+- **Everything new is additive to `AgentState`** — every new field
+  (`kg_context`, `business_glossary`, `complexity`, `sql_candidates`) is read
+  with `.get(..., default)`, and every new node parameter has a safe default
+  (`knowledge_graph=None`, `self_consistency_samples=1`). The graph behaves
+  exactly like the original single-shot pipeline when the new features are
+  left at their defaults, which is why all pre-existing tests pass unchanged.
 
 ---
 
