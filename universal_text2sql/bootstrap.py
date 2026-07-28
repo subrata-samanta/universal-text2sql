@@ -169,12 +169,22 @@ def bootstrap(
 
 
 def _default_llm() -> LLMRunnable | None:
-    if not os.getenv("GROQ_API_KEY"):
+    """Build the default LLM from ``LLM_PROVIDER`` (default ``groq``).
+
+    Preserves the original zero-config behaviour exactly: when
+    ``LLM_PROVIDER`` is unset (or explicitly ``"groq"``) and
+    ``GROQ_API_KEY`` isn't set, this returns ``None`` (heuristics-only
+    mode) rather than constructing a client with an empty key. Other
+    providers (``openai``/``anthropic``/``ollama``) are attempted whenever
+    selected, since e.g. Ollama needs no API key at all.
+    """
+    from universal_text2sql.llm.factory import get_llm
+
+    provider = os.getenv("LLM_PROVIDER", "groq").lower()
+    if provider == "groq" and not os.getenv("GROQ_API_KEY"):
         return None
     try:
-        from universal_text2sql.llm.groq_client import get_groq_llm
-
-        return get_groq_llm()
+        return get_llm(provider)
     except Exception as exc:  # pragma: no cover - defensive
-        logger.warning("Could not initialise default LLM: %s", exc)
+        logger.warning("Could not initialise default LLM (provider=%s): %s", provider, exc)
         return None

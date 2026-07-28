@@ -64,7 +64,7 @@ from universal_text2sql.database.schema import DatabaseSchema
 from universal_text2sql.knowledge.graph import SchemaKnowledgeGraph
 from universal_text2sql.knowledge.metadata import MetadataEnricher
 from universal_text2sql.llm.base import LLMRunnable
-from universal_text2sql.llm.groq_client import get_groq_llm
+from universal_text2sql.llm.factory import get_llm
 
 logger = logging.getLogger(__name__)
 
@@ -120,7 +120,9 @@ def build_graph(
         schema: Pre-discovered database schema.
         memory: RL-inspired query memory.
         max_retries: Maximum self-reflection iterations.
-        llm: Optional pre-built LLM; if ``None`` a default Groq LLM is used.
+        llm: Optional pre-built LLM; if ``None``, one is built via
+            :func:`~universal_text2sql.llm.factory.get_llm` (Groq by
+            default, or another provider via the ``LLM_PROVIDER`` env var).
         knowledge_graph: Optional auto-built schema knowledge graph, used for
             join-path context during SQL generation/reflection. See
             :mod:`universal_text2sql.knowledge.graph`.
@@ -136,7 +138,9 @@ def build_graph(
         A compiled LangGraph runnable.
     """
     if llm is None:
-        llm = get_groq_llm()
+        # Defaults to Groq (matching the original behaviour exactly) unless
+        # LLM_PROVIDER selects a different provider. See universal_text2sql.llm.factory.
+        llm = get_llm()
 
     db_type = connector.db_type
 
