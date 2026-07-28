@@ -52,7 +52,7 @@ class SemanticIndex:
     _norms: dict[str, float] = field(default_factory=dict)
 
     @classmethod
-    def from_documents(cls, documents: dict[str, str]) -> "SemanticIndex":
+    def from_documents(cls, documents: dict[str, str]) -> SemanticIndex:
         """Build an index from ``{doc_id: text}``."""
         index = cls()
         if not documents:

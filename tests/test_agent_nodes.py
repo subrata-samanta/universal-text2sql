@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import pandas as pd
 import pytest
-
 from langchain_core.messages import AIMessage
 from langchain_core.runnables import RunnableLambda
 
@@ -20,7 +18,6 @@ from universal_text2sql.agent.state import AgentState
 from universal_text2sql.database.connector import DatabaseConnector
 from universal_text2sql.database.schema import SchemaDiscovery
 from universal_text2sql.utils.demo_data import seed_demo_database
-
 
 # ---------------------------------------------------------------------------
 # Fixtures

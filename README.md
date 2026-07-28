@@ -1,8 +1,17 @@
 # Universal Text-to-SQL Agent
 
+[![CI](https://github.com/subrata-samanta/universal-text2sql/actions/workflows/ci.yml/badge.svg)](https://github.com/subrata-samanta/universal-text2sql/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](pyproject.toml)
+[![Contributions welcome](https://img.shields.io/badge/contributions-welcome-brightgreen.svg)](CONTRIBUTING.md)
+[![Code of Conduct](https://img.shields.io/badge/Code%20of%20Conduct-Contributor%20Covenant-blueviolet.svg)](CODE_OF_CONDUCT.md)
+
 A fully agentic, **universal** Natural Language → SQL system that works against
 **any** database with zero manual configuration: it discovers its own schema,
 builds its own knowledge graph, and writes its own business glossary.
+
+This is a community open-source project — contributions, issues, and ideas
+are very welcome. See [Contributing](#contributing) below to get started.
 
 - 🔌 **Works with any database** – SQLite, PostgreSQL, MySQL (anything SQLAlchemy supports)
 - 🗺️ **Auto-discovers schema** – reads tables, columns, types, primary/foreign keys, and sample values at startup
@@ -16,6 +25,23 @@ builds its own knowledge graph, and writes its own business glossary.
 - 🔄 **Self-reflection** – automatically detects SQL errors and retries with corrected queries
 - 🧠 **RL-inspired query memory** – successful queries are stored with a reward signal and replayed as few-shot examples for future questions
 - 💬 **Streamlit UI** – interactive web interface (with a knowledge-graph viewer + glossary panel) + CLI
+
+---
+
+## Table of Contents
+
+- [Architecture](#architecture)
+- [Component deep-dive](#component-deep-dive)
+- [Quick Start](#quick-start)
+- [Environment Variables](#environment-variables)
+- [Supported Databases](#supported-databases)
+- [Running Tests](#running-tests)
+- [Project Structure](#project-structure)
+- [Roadmap](#roadmap)
+- [Contributing](#contributing)
+- [Community](#community)
+- [References](#references)
+- [License](#license)
 
 ---
 
@@ -447,3 +473,73 @@ tests/
 ├── test_self_consistency.py  # Complexity classification + candidate voting tests
 └── test_bootstrap.py         # AgentContext orchestration tests
 ```
+
+Project tooling config lives in `pyproject.toml` (packaging, `ruff`, `pytest`,
+`coverage`), with `.pre-commit-config.yaml`, `.editorconfig`, and a `Makefile`
+providing convenience shortcuts (`make test`, `make lint`, `make format`,
+`make ui`) for contributors — see [Contributing](#contributing).
+
+---
+
+## Roadmap
+
+Ideas under consideration — see [open issues](https://github.com/subrata-samanta/universal-text2sql/issues)
+for the current state and feel free to propose more:
+
+- [ ] Pluggable LLM providers beyond Groq (OpenAI, Anthropic, local models via Ollama)
+- [ ] Optional dense-embedding backend for semantic retrieval (as an upgrade path from TF-IDF)
+- [ ] Query decomposition for COMPLEX questions (sub-question → sub-SQL → compose), DIN-SQL-style
+- [ ] Benchmark harness against public text-to-SQL datasets (Spider, BIRD)
+- [ ] Row-level security / read-only enforcement helpers for production deployments
+- [ ] Additional dialect-specific prompt guidance (BigQuery, Snowflake, MSSQL)
+- [ ] Multi-turn conversational follow-up questions ("now filter that by country")
+
+## Contributing
+
+Contributions are very welcome — bug fixes, new database dialect notes, new
+research-backed techniques, tests, and documentation improvements alike.
+
+1. Read [CONTRIBUTING.md](CONTRIBUTING.md) for the development setup, test/lint
+   commands, commit conventions, and PR process.
+2. Check [open issues](https://github.com/subrata-samanta/universal-text2sql/issues)
+   for something to work on, or open a new one to discuss your idea first for
+   larger changes.
+3. All contributors are expected to follow the
+   [Code of Conduct](CODE_OF_CONDUCT.md).
+
+Found a security issue? Please **do not** open a public issue — see
+[SECURITY.md](SECURITY.md) for how to report it privately.
+
+## Community
+
+- 🐛 [Report a bug](https://github.com/subrata-samanta/universal-text2sql/issues/new?template=bug_report.yml)
+- ✨ [Request a feature](https://github.com/subrata-samanta/universal-text2sql/issues/new?template=feature_request.yml)
+- 💬 [Discussions](https://github.com/subrata-samanta/universal-text2sql/discussions) — usage questions and open-ended ideas
+- 📜 [Changelog](CHANGELOG.md) — what shipped, and when
+
+## References
+
+This project implements ideas from (and owes credit to) recent text-to-SQL
+research — see the [State-of-the-art techniques](#state-of-the-art-techniques-implemented)
+table for how each is applied here:
+
+- Pourreza & Rafiei, *DIN-SQL: Decomposed In-Context Learning of Text-to-SQL
+  with Self-Correction*, 2023.
+- Talaei et al., *CHESS: Contextual Harnessing for Efficient SQL Synthesis*, 2024.
+- Pourreza et al., *CHASE-SQL: Multi-Path Reasoning and Preference-Optimized
+  Candidate Selection in Text-to-SQL*, 2024.
+- Wang et al., *MAC-SQL: A Multi-Agent Collaborative Framework for
+  Text-to-SQL*, 2024.
+- Li et al., *RESDSQL: Decoupling Schema Linking and Skeleton Parsing for
+  Text-to-SQL*, 2023.
+- Wang et al., *Self-Consistency Improves Chain of Thought Reasoning in
+  Language Models*, 2022 (the general technique behind self-consistency
+  SQL candidate voting).
+
+If you use this project in academic work, please cite it via the repository
+URL; a `CITATION.cff` is welcome as a contribution if there's demand for it.
+
+## License
+
+Licensed under the [MIT License](LICENSE) — free for personal, academic, and
+commercial use.

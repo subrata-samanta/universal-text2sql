@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import pandas as pd
-import pytest
 from langchain_core.messages import AIMessage
 from langchain_core.runnables import RunnableLambda
 

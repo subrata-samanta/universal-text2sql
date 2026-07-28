@@ -1,0 +1,46 @@
+name: ✨ Feature request
+description: Propose a new capability or improvement
+labels: ["enhancement", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Feature proposals grounded in a specific paper, benchmark, or
+        real-world use case are especially easy to evaluate — link one if you
+        have it.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: What can't you do today, or what's clunky/inefficient?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: |
+        How would this work? If it's inspired by a research technique
+        (e.g. something from the README's "State-of-the-art techniques"
+        table), link the paper or approach.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Any other approaches you thought about and why you didn't prefer them.
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: constraints
+    attributes:
+      label: Compatibility
+      description: This project targets zero-configuration, "works on any database" behavior — check what applies.
+      options:
+        - label: This should degrade gracefully when no LLM/API key is configured
+        - label: This should work without adding a required new external dependency (or the trade-off is discussed in the proposal)
