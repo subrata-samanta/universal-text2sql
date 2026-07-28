@@ -75,6 +75,13 @@ ollama = [
 all-providers = [
     "universal-text2sql[openai,anthropic,ollama]",
 ]
+# Run notebooks/01_end_to_end_walkthrough.ipynb (`jupyter nbconvert --execute`
+# or opening it in Jupyter/JupyterLab directly). Not needed to use the
+# library itself -- only to run the notebook.
+notebook = [
+    "jupyter>=1.0.0",
+    "ipykernel>=6.29.0",
+]
 
 [project.urls]
 Homepage = "https://github.com/subrata-samanta/universal-text2sql"

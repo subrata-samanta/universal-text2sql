@@ -401,6 +401,14 @@ covered by the LLM glossary's synonym pass.
 
 ## Quick Start
 
+> **New to this codebase?** [`notebooks/01_end_to_end_walkthrough.ipynb`](notebooks/01_end_to_end_walkthrough.ipynb)
+> is a narrated, cell-by-cell tour of every layer described below — schema
+> discovery, the knowledge graph, the auto-generated glossary, semantic
+> retrieval, value grounding, every agent node individually, self-consistency,
+> query decomposition, safety guardrails, multi-turn conversation, pluggable
+> providers, and the evaluation harness — all runnable with no API key
+> (`pip install -e ".[notebook]"` then open it in Jupyter/JupyterLab).
+
 ### 1. Install
 
 ```bash
@@ -589,6 +597,8 @@ universal_text2sql/
 bootstrap.py            # Single entry point: connect → discover → KG → glossary → grounding → AgentContext
 app.py                  # Streamlit web UI (knowledge graph, glossary, grounding, conversation panels)
 main.py                 # CLI entry point (--graph / --glossary / --grounding inspection flags)
+notebooks/
+└── 01_end_to_end_walkthrough.ipynb  # Narrated, runnable tour of every layer (no API key needed)
 eval/
 ├── golden/demo_db.jsonl  # Golden question set with hand-computed expected results
 ├── metrics.py            # Execution-accuracy scoring
