@@ -3,6 +3,10 @@ __pycache__/
 *.py[codz]
 *$py.class
 
+# Universal Text-to-SQL Agent runtime artifacts
+query_memory.json
+.metadata_cache/
+
 # C extensions
 *.so
 

@@ -4,17 +4,18 @@ Run with:
     streamlit run app.py
 
 Environment variables (.env or shell):
-    GROQ_API_KEY   – required
-    DATABASE_URL   – optional (defaults to in-memory SQLite demo)
-    GROQ_MODEL     – optional (defaults to llama-3.3-70b-versatile)
-    MAX_RETRIES    – optional (defaults to 3)
+    GROQ_API_KEY               – required
+    DATABASE_URL               – optional (defaults to in-memory SQLite demo)
+    GROQ_MODEL                 – optional (defaults to llama-3.3-70b-versatile)
+    MAX_RETRIES                – optional (defaults to 3)
+    ENABLE_METADATA_ENRICHMENT – optional (defaults to true)
+    ENABLE_QUERY_MEMORY        – optional (defaults to true)
 """
 
 from __future__ import annotations
 
 import logging
 import os
-from pathlib import Path
 
 import pandas as pd
 import streamlit as st
@@ -37,34 +38,20 @@ st.set_page_config(
 # ---------------------------------------------------------------------------
 # Lazy imports (keep startup fast)
 # ---------------------------------------------------------------------------
-from universal_text2sql.agent.graph import run_query  # noqa: E402
-from universal_text2sql.agent.memory import QueryMemory  # noqa: E402
-from universal_text2sql.database.connector import DatabaseConnector  # noqa: E402
-from universal_text2sql.database.schema import SchemaDiscovery  # noqa: E402
-from universal_text2sql.utils.demo_data import seed_demo_database  # noqa: E402
+from universal_text2sql.bootstrap import AgentContext, bootstrap  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Session-level initialisation (cached)
 # ---------------------------------------------------------------------------
 
 
-@st.cache_resource(show_spinner="Connecting to database …")
-def _get_connector(url: str) -> DatabaseConnector:
-    connector = DatabaseConnector(url)
-    seed_demo_database(connector)
-    return connector
-
-
-@st.cache_resource(show_spinner="Discovering schema …")
-def _get_schema(_connector: DatabaseConnector):
-    discovery = SchemaDiscovery(_connector)
-    return discovery.discover()
-
-
-@st.cache_resource
-def _get_memory() -> QueryMemory:
-    enabled = os.getenv("ENABLE_QUERY_MEMORY", "true").lower() == "true"
-    return QueryMemory(enabled=enabled)
+@st.cache_resource(show_spinner="Connecting · discovering schema · building knowledge graph …")
+def _get_context(db_url: str, max_retries: int, self_consistency_samples: int) -> AgentContext:
+    return bootstrap(
+        database_url=db_url,
+        max_retries=max_retries,
+        self_consistency_samples=self_consistency_samples,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -75,7 +62,8 @@ def _get_memory() -> QueryMemory:
 def main() -> None:
     st.title("🤖 Universal Text-to-SQL Agent")
     st.caption(
-        "Powered by **LangGraph** + **Groq** · Self-reflection · RL-inspired query memory"
+        "Powered by **LangGraph** + **Groq** · Auto knowledge graph · Auto business glossary · "
+        "Self-consistency · Self-reflection · RL-inspired query memory"
     )
 
     # ---- Sidebar: configuration ----
@@ -115,33 +103,52 @@ def main() -> None:
         os.environ["GROQ_MODEL"] = model
 
         max_retries = st.slider("Max Self-Reflection Retries", min_value=1, max_value=5, value=3)
+        self_consistency_samples = st.slider(
+            "Self-Consistency Candidates",
+            min_value=1,
+            max_value=5,
+            value=1,
+            help=(
+                "Sample multiple SQL candidates for non-trivial questions and pick the "
+                "majority-vote result (costs extra LLM calls; 1 = disabled)."
+            ),
+        )
 
         st.markdown("---")
         st.subheader("📊 Database Info")
 
-    # Lazy-init resources
+    # Lazy-init resources (connect, discover schema, build KG, generate glossary)
     try:
-        connector = _get_connector(db_url)
-        schema = _get_schema(connector)
-        memory = _get_memory()
+        ctx = _get_context(db_url, max_retries, self_consistency_samples)
     except Exception as exc:
         st.error(f"Failed to connect to database: {exc}")
         st.stop()
+    schema = ctx.schema
 
-    # Show schema in sidebar
+    # Show schema + auto-generated metadata in sidebar
     with st.sidebar:
         for tname, tmeta in schema.tables.items():
             with st.expander(f"📋 {tname} ({tmeta.row_count} rows)"):
+                if tmeta.description:
+                    st.caption(tmeta.description)
                 col_info = [
                     {
                         "Column": c.name,
                         "Type": c.data_type,
                         "PK": "✓" if c.primary_key else "",
                         "Nullable": "✓" if c.nullable else "",
+                        "Meaning": c.business_meaning,
                     }
                     for c in tmeta.columns
                 ]
                 st.dataframe(pd.DataFrame(col_info), use_container_width=True, hide_index=True)
+
+        st.markdown("---")
+        with st.expander("🕸️ Knowledge Graph"):
+            st.graphviz_chart(ctx.knowledge_graph.to_graphviz())
+            st.text(ctx.describe_knowledge_graph())
+        with st.expander("📖 Auto-Generated Glossary"):
+            st.text(ctx.describe_glossary())
 
     # ---- Main area: query input ----
     st.markdown("### 💬 Ask a question about your data")
@@ -181,13 +188,7 @@ def main() -> None:
     if ask_btn or question:
         with st.spinner("🤔 Thinking …"):
             try:
-                result = run_query(
-                    question=question,
-                    connector=connector,
-                    schema=schema,
-                    memory=memory,
-                    max_retries=max_retries,
-                )
+                result = ctx.ask(question)
             except Exception as exc:
                 st.error(f"Agent error: {exc}")
                 logger.exception("Agent error")
@@ -213,6 +214,11 @@ def main() -> None:
         with tab_sql:
             sql = result.get("generated_sql", "")
             st.code(sql, language="sql")
+            if result.get("complexity"):
+                st.caption(f"🧮 Classified complexity: {result['complexity']}")
+            candidates = result.get("sql_candidates") or []
+            if len(candidates) > 1:
+                st.info(f"🗳️ Self-consistency: {len(candidates)} candidates sampled and voted on.")
             retries = result.get("retry_count", 0)
             if retries > 0:
                 st.info(f"🔁 Self-reflection was used {retries} time(s) to correct the query.")

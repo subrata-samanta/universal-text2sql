@@ -27,7 +27,19 @@ class AgentState(TypedDict):
     # Few-shot examples retrieved from the query memory
     few_shot_examples: list[dict[str, Any]]
 
-    # Generated SQL query (current attempt)
+    # Knowledge-graph derived table-relationship / join-path context
+    kg_context: str
+
+    # Auto-generated business glossary block for the relevant tables
+    business_glossary: str
+
+    # Estimated query complexity ("SIMPLE" | "MODERATE" | "COMPLEX")
+    complexity: str
+
+    # Candidate SQL queries generated this turn (self-consistency sampling)
+    sql_candidates: list[str]
+
+    # Generated SQL query (current attempt / selected best candidate)
     generated_sql: str
 
     # Result of executing the SQL
