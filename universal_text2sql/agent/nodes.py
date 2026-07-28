@@ -26,6 +26,7 @@ import pandas as pd
 from langchain_core.messages import AIMessage, HumanMessage
 
 from universal_text2sql.agent.memory import QueryMemory
+from universal_text2sql.agent.scoring import result_signature
 from universal_text2sql.agent.state import AgentState
 from universal_text2sql.database.connector import DatabaseConnector
 from universal_text2sql.database.schema import DatabaseSchema
@@ -215,17 +216,7 @@ def classify_complexity(
 # ---------------------------------------------------------------------------
 
 
-def _result_signature(df: pd.DataFrame | None) -> str:
-    """Order-independent signature of a query result, for grouping candidates."""
-    if df is None:
-        return "<empty>"
-    try:
-        rows = sorted(tuple(str(v) for v in row) for row in df.itertuples(index=False))
-        cols = sorted(str(c) for c in df.columns)
-        return f"{len(rows)}::{cols}::" + "|".join(",".join(r) for r in rows)
-    except Exception:
-        return str(df)
-
+_result_signature = result_signature  # local alias, kept for call-site brevity below
 
 _SELF_CONSISTENCY_PREVIEW_LIMIT = 200
 
