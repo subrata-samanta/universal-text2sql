@@ -29,21 +29,16 @@ import logging
 import os
 import re
 from pathlib import Path
-from typing import Any, Protocol, runtime_checkable
+from typing import Any
 
 from universal_text2sql.database.schema import DatabaseSchema
+from universal_text2sql.llm.base import LLMRunnable
 
 logger = logging.getLogger(__name__)
 
 _CACHE_DIR = Path(os.getenv("METADATA_CACHE_DIR", "./.metadata_cache"))
 
 _WORD_SPLIT_RE = re.compile(r"[_\-]+|(?<=[a-z0-9])(?=[A-Z])")
-
-
-@runtime_checkable
-class LLMRunnable(Protocol):
-    def invoke(self, input: Any, **kwargs: Any) -> Any:  # noqa: A002
-        ...
 
 
 def _humanize(identifier: str) -> str:

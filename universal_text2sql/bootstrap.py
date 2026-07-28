@@ -27,11 +27,11 @@ from typing import Any
 
 from universal_text2sql.agent.graph import run_query
 from universal_text2sql.agent.memory import QueryMemory
-from universal_text2sql.agent.nodes import LLMRunnable
 from universal_text2sql.database.connector import DatabaseConnector
 from universal_text2sql.database.schema import DatabaseSchema, SchemaDiscovery
 from universal_text2sql.knowledge.graph import SchemaKnowledgeGraph
 from universal_text2sql.knowledge.metadata import MetadataEnricher
+from universal_text2sql.llm.base import LLMRunnable
 
 logger = logging.getLogger(__name__)
 

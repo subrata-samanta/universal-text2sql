@@ -48,7 +48,6 @@ from langgraph.graph import END, START, StateGraph
 
 from universal_text2sql.agent.memory import QueryMemory
 from universal_text2sql.agent.nodes import (
-    LLMRunnable,
     classify_complexity,
     execute_sql,
     format_answer,
@@ -64,6 +63,7 @@ from universal_text2sql.database.connector import DatabaseConnector
 from universal_text2sql.database.schema import DatabaseSchema
 from universal_text2sql.knowledge.graph import SchemaKnowledgeGraph
 from universal_text2sql.knowledge.metadata import MetadataEnricher
+from universal_text2sql.llm.base import LLMRunnable
 from universal_text2sql.llm.groq_client import get_groq_llm
 
 logger = logging.getLogger(__name__)

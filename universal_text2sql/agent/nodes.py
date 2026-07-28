@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Any, Protocol, runtime_checkable
+from typing import Any
 
 import pandas as pd
 from langchain_core.messages import AIMessage, HumanMessage
@@ -31,6 +31,7 @@ from universal_text2sql.database.connector import DatabaseConnector
 from universal_text2sql.database.schema import DatabaseSchema
 from universal_text2sql.knowledge.graph import SchemaKnowledgeGraph
 from universal_text2sql.knowledge.metadata import MetadataEnricher
+from universal_text2sql.llm.base import LLMRunnable
 from universal_text2sql.prompts.templates import (
     ANSWER_GENERATION_PROMPT,
     QUERY_COMPLEXITY_PROMPT,
@@ -42,21 +43,6 @@ from universal_text2sql.prompts.templates import (
 )
 
 logger = logging.getLogger(__name__)
-
-
-@runtime_checkable
-class LLMRunnable(Protocol):
-    """Minimal protocol for a LangChain-compatible chat LLM.
-
-    Both :class:`~langchain_groq.ChatGroq` and
-    :class:`~langchain_core.runnables.RunnableLambda` satisfy this protocol.
-    """
-
-    def invoke(self, input: Any, **kwargs: Any) -> Any:  # noqa: A002
-        ...
-
-    def __or__(self, other: Any) -> Any:
-        ...
 
 
 def _extract_sql(text: str) -> str:
