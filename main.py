@@ -53,11 +53,13 @@ def _setup() -> AgentContext:
     return ctx
 
 
-def _ask(question: str, ctx: AgentContext) -> None:
+def _ask(
+    question: str, ctx: AgentContext, history: list[dict[str, str]] | None = None
+) -> dict:
     print(f"\n❓ {question}")
     print("⏳ Processing …")
 
-    result = ctx.ask(question)
+    result = ctx.ask(question, conversation_history=history)
 
     print(f"\n📝 SQL:\n{result.get('generated_sql', '')}")
     if result.get("complexity"):
@@ -75,6 +77,16 @@ def _ask(question: str, ctx: AgentContext) -> None:
         print(f"\n❌ Error: {result['execution_error']}")
     print(f"\n💬 Answer: {result.get('final_answer', '')}")
     print("-" * 60)
+
+    if history is not None:
+        history.append(
+            {
+                "question": question,
+                "sql": result.get("generated_sql", ""),
+                "answer": result.get("final_answer", ""),
+            }
+        )
+    return result
 
 
 def main() -> None:
@@ -100,6 +112,7 @@ def main() -> None:
 
     # Interactive mode
     print("Type your question and press Enter. Type 'exit' to quit.\n")
+    history: list[dict[str, str]] = []
     while True:
         try:
             question = input("You: ").strip()
@@ -111,7 +124,7 @@ def main() -> None:
         if question.lower() in {"exit", "quit", "q"}:
             print("Goodbye! 👋")
             break
-        _ask(question, ctx)
+        _ask(question, ctx, history)
 
 
 if __name__ == "__main__":

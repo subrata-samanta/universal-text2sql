@@ -37,6 +37,10 @@ class AgentState(TypedDict):
     # column values (see knowledge.grounding.ValueGroundingIndex)
     grounding_hints: str
 
+    # Rendered "Previous Turn(s)" block for multi-turn conversational
+    # follow-ups (see prompts.templates.build_conversation_context_block)
+    conversation_context: str
+
     # Estimated query complexity ("SIMPLE" | "MODERATE" | "COMPLEX")
     complexity: str
 

@@ -63,7 +63,7 @@ def main() -> None:
     st.title("🤖 Universal Text-to-SQL Agent")
     st.caption(
         "Powered by **LangGraph** + **Groq** · Auto knowledge graph · Auto business glossary · "
-        "Self-consistency · Self-reflection · RL-inspired query memory"
+        "Value grounding · Self-consistency · Self-reflection · Multi-turn follow-ups"
     )
 
     # ---- Sidebar: configuration ----
@@ -150,8 +150,28 @@ def main() -> None:
         with st.expander("📖 Auto-Generated Glossary"):
             st.text(ctx.describe_glossary())
 
+    # Session-scoped conversation history, for multi-turn follow-up questions
+    # (e.g. "now filter that by country"). Streamlit reruns the whole script
+    # on every interaction, so this must live in st.session_state rather
+    # than a plain local variable to survive across reruns.
+    if "conversation_history" not in st.session_state:
+        st.session_state.conversation_history = []
+
     # ---- Main area: query input ----
-    st.markdown("### 💬 Ask a question about your data")
+    header_col, clear_col = st.columns([5, 1])
+    with header_col:
+        st.markdown("### 💬 Ask a question about your data")
+    with clear_col:
+        if st.session_state.conversation_history and st.button("🗑️ Clear conversation"):
+            st.session_state.conversation_history = []
+            st.rerun()
+
+    if st.session_state.conversation_history:
+        with st.expander(f"🗨️ Conversation ({len(st.session_state.conversation_history)} turn(s))"):
+            for turn in st.session_state.conversation_history:
+                st.markdown(f"**Q:** {turn['question']}")
+                st.markdown(f"**A:** {turn['answer']}")
+                st.markdown("---")
 
     example_questions = [
         "How many customers are from the USA?",
@@ -188,11 +208,21 @@ def main() -> None:
     if ask_btn or question:
         with st.spinner("🤔 Thinking …"):
             try:
-                result = ctx.ask(question)
+                result = ctx.ask(
+                    question, conversation_history=st.session_state.conversation_history
+                )
             except Exception as exc:
                 st.error(f"Agent error: {exc}")
                 logger.exception("Agent error")
                 return
+
+        st.session_state.conversation_history.append(
+            {
+                "question": question,
+                "sql": result.get("generated_sql", ""),
+                "answer": result.get("final_answer", ""),
+            }
+        )
 
         # ---- Results ----
         st.markdown("---")

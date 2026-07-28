@@ -190,6 +190,7 @@ def generate_sql(
         "kg_context": state.get("kg_context", ""),
         "business_glossary": state.get("business_glossary", ""),
         "grounding_hints": state.get("grounding_hints", ""),
+        "conversation_context": state.get("conversation_context", ""),
         "few_shot_block": few_shot_block,
         "question": state["question"],
     }

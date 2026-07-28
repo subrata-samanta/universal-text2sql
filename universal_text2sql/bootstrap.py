@@ -55,8 +55,21 @@ class AgentContext:
     self_consistency_samples: int = 1
     enable_query_decomposition: bool = False
 
-    def ask(self, question: str) -> dict[str, Any]:
-        """Run a single natural language question through the agent graph."""
+    def ask(
+        self, question: str, conversation_history: list[dict[str, str]] | None = None
+    ) -> dict[str, Any]:
+        """Run a single natural language question through the agent graph.
+
+        Args:
+            question: The natural language question.
+            conversation_history: Optional prior turns for multi-turn
+                follow-up questions (e.g. "now filter that by country") --
+                see :func:`~universal_text2sql.agent.graph.run_query`.
+                Caller-owned: this method doesn't accumulate history
+                itself, so a session (``main.py``'s interactive loop,
+                ``app.py``'s Streamlit session state) must pass the growing
+                list back in on each turn.
+        """
         return run_query(
             question=question,
             connector=self.connector,
@@ -69,6 +82,7 @@ class AgentContext:
             grounding_index=self.grounding_index,
             self_consistency_samples=self.self_consistency_samples,
             enable_query_decomposition=self.enable_query_decomposition,
+            conversation_history=conversation_history,
         )
 
     def describe_knowledge_graph(self) -> str:

@@ -49,6 +49,8 @@ SQL_GENERATION_PROMPT = ChatPromptTemplate.from_messages(
 
 {grounding_hints}
 
+{conversation_context}
+
 {few_shot_block}
 ## Question
 {question}
@@ -56,13 +58,16 @@ SQL_GENERATION_PROMPT = ChatPromptTemplate.from_messages(
 Think step-by-step:
 1. Identify which tables and columns are relevant (use the Business Glossary if a term in the \
 question doesn't literally match a column name).
-2. If tables must be joined, use the Table Relationships block for the exact join columns — \
+2. If the question refers back to the conversation (e.g. "now filter that by country", "what \
+about last year"), resolve what "that"/"it"/the implicit subject refers to using the Previous \
+Turn block, and incorporate the earlier question/SQL's intent into this one.
+3. If tables must be joined, use the Table Relationships block for the exact join columns — \
 prefer a declared foreign key, then an inferred relationship, then a suggested multi-hop path.
-3. For filter literals, check the Value Grounding Hints block first — it shows the exact stored \
+4. For filter literals, check the Value Grounding Hints block first — it shows the exact stored \
 spelling of values matched from the question (e.g. the question says "usa" but the real stored \
 value is "USA"); prefer these grounded values over guessing the literal yourself.
-4. Determine what aggregations, filters, or joins are needed.
-5. Write the final SQL query.
+5. Determine what aggregations, filters, or joins are needed.
+6. Write the final SQL query.
 
 SQL:""",
         ),
@@ -343,3 +348,23 @@ def build_cte_block(steps: list[dict[str, str]]) -> str:
     for i, step in enumerate(steps, 1):
         parts.append(f"step_{i} -- {step['sub_question']}\nAS (\n{step['sql_fragment']}\n)")
     return "\n\n".join(parts)
+
+
+def build_conversation_context_block(history: list[dict[str, str]], max_turns: int = 3) -> str:
+    """Render the last *max_turns* conversation turns as a "Previous Turn" block.
+
+    Each *history* entry is a ``{"question", "sql", "answer"}`` dict, oldest
+    first. Returns an empty string for no history, so the prompt renders
+    identically to a single-turn question when there's nothing to add.
+    """
+    if not history:
+        return ""
+    lines = ["## Previous Turn(s) In This Conversation"]
+    for turn in history[-max_turns:]:
+        lines.append(f"Previous question: {turn.get('question', '')}")
+        if turn.get("sql"):
+            lines.append(f"Previous SQL: {turn['sql']}")
+        if turn.get("answer"):
+            lines.append(f"Previous answer: {turn['answer']}")
+        lines.append("")
+    return "\n".join(lines).rstrip()

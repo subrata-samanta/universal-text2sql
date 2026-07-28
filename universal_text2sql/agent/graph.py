@@ -70,6 +70,7 @@ from universal_text2sql.knowledge.grounding import ValueGroundingIndex
 from universal_text2sql.knowledge.metadata import MetadataEnricher
 from universal_text2sql.llm.base import LLMRunnable
 from universal_text2sql.llm.factory import get_llm
+from universal_text2sql.prompts.templates import build_conversation_context_block
 
 logger = logging.getLogger(__name__)
 
@@ -274,8 +275,18 @@ def run_query(
     grounding_index: ValueGroundingIndex | None = None,
     self_consistency_samples: int = _DEFAULT_SELF_CONSISTENCY_SAMPLES,
     enable_query_decomposition: bool = _DEFAULT_ENABLE_QUERY_DECOMPOSITION,
+    conversation_history: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     """Run a single natural language question through the agent.
+
+    Args:
+        conversation_history: Optional prior turns
+            (``[{"question", "sql", "answer"}, ...]``, oldest first) for
+            multi-turn follow-up questions (e.g. "now filter that by
+            country"). Caller-owned -- this function doesn't persist
+            anything itself; ``main.py``/``app.py`` accumulate it per
+            session. ``None``/empty renders identically to a single-turn
+            question.
 
     Returns the final :class:`AgentState` as a dict.
     """
@@ -300,6 +311,7 @@ def run_query(
         "kg_context": "",
         "business_glossary": "",
         "grounding_hints": "",
+        "conversation_context": build_conversation_context_block(conversation_history or []),
         "complexity": "",
         "sql_candidates": [],
         "sub_questions": [],
