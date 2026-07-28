@@ -98,7 +98,7 @@ class SchemaKnowledgeGraph:
     # ------------------------------------------------------------------
 
     @classmethod
-    def build(cls, schema: DatabaseSchema) -> "SchemaKnowledgeGraph":
+    def build(cls, schema: DatabaseSchema) -> SchemaKnowledgeGraph:
         kg = cls()
         kg._add_structural_nodes(schema)
         kg._add_explicit_foreign_keys(schema)
@@ -139,7 +139,7 @@ class SchemaKnowledgeGraph:
                 referred_cols = fk.get("referred_columns", [])
                 if not referred_table or referred_table not in schema.tables:
                     continue
-                for c_col, r_col in zip(constrained_cols, referred_cols):
+                for c_col, r_col in zip(constrained_cols, referred_cols, strict=False):
                     self._add_join_edge(
                         table_name, c_col, referred_table, r_col, kind="foreign_key"
                     )
@@ -257,7 +257,7 @@ class SchemaKnowledgeGraph:
             return []
 
         hops: list[JoinHop] = []
-        for u, v in zip(path, path[1:]):
+        for u, v in zip(path, path[1:], strict=False):
             edge_data = self._table_graph.get_edge_data(u, v)
             # MultiGraph with parallel edges keyed by int; take the first
             first = next(iter(edge_data.values()))

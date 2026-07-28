@@ -101,7 +101,7 @@ class DatabaseSchema:
         relevant = [t for t in sorted_tables if scores[t] > 0]
         return relevant if relevant else sorted_tables
 
-    def _table_document(self, meta: "TableMetadata") -> str:
+    def _table_document(self, meta: TableMetadata) -> str:
         """Build a text blob describing a table for semantic retrieval."""
         parts = [meta.name, meta.description, " ".join(meta.synonyms)]
         for col in meta.columns:

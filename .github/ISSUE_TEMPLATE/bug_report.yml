@@ -1,0 +1,69 @@
+name: 🐛 Bug report
+description: Something isn't working as expected
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug! Please fill in as much
+        detail as you can — it makes reproducing and fixing the issue much
+        faster.
+
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: A clear description of the bug, and what you expected instead.
+      placeholder: The agent generated SQL joining on the wrong column and returned an error...
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: |
+        Include the question you asked and, if possible, whether it reproduces
+        against the bundled demo database (`python main.py "..."` with no
+        `DATABASE_URL` set). Please do not include real credentials or data.
+      placeholder: |
+        1. `python main.py "How many orders per country?"`
+        2. Observed error: ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: sql
+    attributes:
+      label: Generated SQL (if relevant)
+      render: sql
+    validations:
+      required: false
+
+  - type: dropdown
+    id: db
+    attributes:
+      label: Database backend
+      options:
+        - SQLite
+        - PostgreSQL
+        - MySQL
+        - Other SQLAlchemy-supported backend
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Version / commit
+      description: Output of `git rev-parse HEAD` or the release tag you're on.
+    validations:
+      required: false
+
+  - type: textarea
+    id: env
+    attributes:
+      label: Environment
+      description: Python version, OS, and relevant package versions (`pip freeze` excerpt).
+    validations:
+      required: false

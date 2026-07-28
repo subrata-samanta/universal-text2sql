@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: 🔒 Report a security vulnerability
+    url: https://github.com/subrata-samanta/universal-text2sql/security/policy
+    about: Please do not file security issues publicly — see SECURITY.md for how to report privately.
+  - name: 💬 Ask a question / start a discussion
+    url: https://github.com/subrata-samanta/universal-text2sql/discussions
+    about: For usage questions or open-ended ideas that aren't yet a concrete bug or feature request.

@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-import pytest
-
 from universal_text2sql.agent.graph import (
     _should_reflect_on_validation,
     _should_reflect_or_continue,
@@ -68,12 +66,11 @@ class TestRoutingLogic:
 
 class TestBuildGraph:
     def test_graph_compiled_without_errors(self):
-        from unittest.mock import MagicMock, patch
 
         from universal_text2sql.agent.graph import build_graph
         from universal_text2sql.agent.memory import QueryMemory
         from universal_text2sql.database.connector import DatabaseConnector
-        from universal_text2sql.database.schema import DatabaseSchema, SchemaDiscovery
+        from universal_text2sql.database.schema import SchemaDiscovery
         from universal_text2sql.utils.demo_data import seed_demo_database
 
         conn = DatabaseConnector("sqlite:///:memory:")
