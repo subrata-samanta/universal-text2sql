@@ -19,6 +19,9 @@ class ColumnMetadata:
     nullable: bool
     primary_key: bool
     sample_values: list[Any] = field(default_factory=list)
+    # Populated by knowledge.metadata.MetadataEnricher (LLM- or heuristic-generated)
+    business_meaning: str = ""
+    synonyms: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -28,6 +31,8 @@ class TableMetadata:
     foreign_keys: list[dict[str, Any]] = field(default_factory=list)
     row_count: int = 0
     description: str = ""
+    # Populated by knowledge.metadata.MetadataEnricher
+    synonyms: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -95,6 +100,39 @@ class DatabaseSchema:
         sorted_tables = sorted(scores, key=lambda t: scores[t], reverse=True)
         relevant = [t for t in sorted_tables if scores[t] > 0]
         return relevant if relevant else sorted_tables
+
+    def _table_document(self, meta: "TableMetadata") -> str:
+        """Build a text blob describing a table for semantic retrieval."""
+        parts = [meta.name, meta.description, " ".join(meta.synonyms)]
+        for col in meta.columns:
+            parts.append(col.name)
+            parts.append(col.business_meaning)
+            parts.append(" ".join(col.synonyms))
+            parts.extend(str(v) for v in col.sample_values[:3])
+        return " ".join(p for p in parts if p)
+
+    def get_relevant_tables_semantic(
+        self, question: str, top_k: int | None = None, min_score: float = 0.0
+    ) -> list[str]:
+        """Rank tables by TF-IDF cosine similarity against the question.
+
+        Falls back to :meth:`get_relevant_tables` (keyword overlap) when the
+        semantic index cannot separate any tables (e.g. an empty schema, or
+        a question that shares no vocabulary at all with any table/column
+        name, description, or sample value).
+        """
+        from universal_text2sql.retrieval.semantic import SemanticIndex
+
+        documents = {name: self._table_document(meta) for name, meta in self.tables.items()}
+        index = SemanticIndex.from_documents(documents)
+        ranked = index.rank(question, top_k=top_k)
+        relevant = [t for t, score in ranked if score > min_score]
+
+        if not relevant:
+            keywords = [w for w in question.lower().split() if len(w) > 3]
+            return self.get_relevant_tables(keywords)
+
+        return relevant
 
     def subset_ddl(self, table_names: list[str]) -> str:
         """Return DDL for a subset of tables only."""

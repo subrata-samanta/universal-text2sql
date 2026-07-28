@@ -6,10 +6,16 @@ Graph topology
     START
       │
       ▼
-  select_schema          ← identify relevant tables, build context
+  select_schema          ← semantic + knowledge-graph schema linking, glossary lookup
       │
       ▼
-  generate_sql           ← CoT + few-shot SQL generation via Groq
+  classify_complexity    ← SIMPLE / MODERATE / COMPLEX routing (DIN-SQL-style)
+      │
+      ▼
+  generate_sql           ← CoT + few-shot SQL generation (multi-candidate if complex)
+      │
+      ▼
+  select_best_candidate  ← self-consistency: execute candidates, majority vote
       │
       ▼
   execute_sql            ← run against live database
@@ -43,10 +49,12 @@ from langgraph.graph import END, START, StateGraph
 from universal_text2sql.agent.memory import QueryMemory
 from universal_text2sql.agent.nodes import (
     LLMRunnable,
+    classify_complexity,
     execute_sql,
     format_answer,
     generate_sql,
     reflect,
+    select_best_candidate,
     select_schema,
     store_memory,
     validate_result,
@@ -54,11 +62,14 @@ from universal_text2sql.agent.nodes import (
 from universal_text2sql.agent.state import AgentState
 from universal_text2sql.database.connector import DatabaseConnector
 from universal_text2sql.database.schema import DatabaseSchema
+from universal_text2sql.knowledge.graph import SchemaKnowledgeGraph
+from universal_text2sql.knowledge.metadata import MetadataEnricher
 from universal_text2sql.llm.groq_client import get_groq_llm
 
 logger = logging.getLogger(__name__)
 
 _DEFAULT_MAX_RETRIES = int(os.getenv("MAX_RETRIES", "3"))
+_DEFAULT_SELF_CONSISTENCY_SAMPLES = int(os.getenv("SELF_CONSISTENCY_SAMPLES", "1"))
 
 
 # ---------------------------------------------------------------------------
@@ -98,6 +109,9 @@ def build_graph(
     memory: QueryMemory,
     max_retries: int = _DEFAULT_MAX_RETRIES,
     llm: LLMRunnable | None = None,
+    knowledge_graph: SchemaKnowledgeGraph | None = None,
+    metadata_enricher: MetadataEnricher | None = None,
+    self_consistency_samples: int = _DEFAULT_SELF_CONSISTENCY_SAMPLES,
 ) -> Any:
     """Build and compile the LangGraph StateGraph.
 
@@ -107,6 +121,16 @@ def build_graph(
         memory: RL-inspired query memory.
         max_retries: Maximum self-reflection iterations.
         llm: Optional pre-built LLM; if ``None`` a default Groq LLM is used.
+        knowledge_graph: Optional auto-built schema knowledge graph, used for
+            join-path context during SQL generation/reflection. See
+            :mod:`universal_text2sql.knowledge.graph`.
+        metadata_enricher: Optional auto-generated business glossary, used to
+            resolve business terms that don't literally match column names.
+            See :mod:`universal_text2sql.knowledge.metadata`.
+        self_consistency_samples: How many SQL candidates to sample for
+            questions classified as at least ``MODERATE`` complexity (``1``
+            disables self-consistency and matches the original single-shot
+            behaviour).
 
     Returns:
         A compiled LangGraph runnable.
@@ -117,8 +141,21 @@ def build_graph(
     db_type = connector.db_type
 
     # Bind dependencies into each node via functools.partial
-    _select_schema = functools.partial(select_schema, schema=schema, memory=memory)
-    _generate_sql = functools.partial(generate_sql, llm=llm, db_type=db_type)
+    _select_schema = functools.partial(
+        select_schema,
+        schema=schema,
+        memory=memory,
+        knowledge_graph=knowledge_graph,
+        metadata_enricher=metadata_enricher,
+    )
+    _classify_complexity = functools.partial(classify_complexity, llm=llm)
+    _generate_sql = functools.partial(
+        generate_sql,
+        llm=llm,
+        db_type=db_type,
+        self_consistency_samples=self_consistency_samples,
+    )
+    _select_best_candidate = functools.partial(select_best_candidate, connector=connector)
     _execute_sql = functools.partial(execute_sql, connector=connector)
     _validate_result = functools.partial(validate_result, llm=llm)
     _reflect = functools.partial(reflect, llm=llm, db_type=db_type)
@@ -129,7 +166,9 @@ def build_graph(
     builder = StateGraph(AgentState)
 
     builder.add_node("select_schema", _select_schema)
+    builder.add_node("classify_complexity", _classify_complexity)
     builder.add_node("generate_sql", _generate_sql)
+    builder.add_node("select_best_candidate", _select_best_candidate)
     builder.add_node("execute_sql", _execute_sql)
     builder.add_node("validate_result", _validate_result)
     builder.add_node("reflect", _reflect)
@@ -138,8 +177,10 @@ def build_graph(
 
     # Edges
     builder.add_edge(START, "select_schema")
-    builder.add_edge("select_schema", "generate_sql")
-    builder.add_edge("generate_sql", "execute_sql")
+    builder.add_edge("select_schema", "classify_complexity")
+    builder.add_edge("classify_complexity", "generate_sql")
+    builder.add_edge("generate_sql", "select_best_candidate")
+    builder.add_edge("select_best_candidate", "execute_sql")
     builder.add_conditional_edges(
         "execute_sql",
         _should_reflect_or_continue,
@@ -178,6 +219,9 @@ def run_query(
     memory: QueryMemory,
     max_retries: int = _DEFAULT_MAX_RETRIES,
     llm: LLMRunnable | None = None,
+    knowledge_graph: SchemaKnowledgeGraph | None = None,
+    metadata_enricher: MetadataEnricher | None = None,
+    self_consistency_samples: int = _DEFAULT_SELF_CONSISTENCY_SAMPLES,
 ) -> dict[str, Any]:
     """Run a single natural language question through the agent.
 
@@ -189,6 +233,9 @@ def run_query(
         memory=memory,
         max_retries=max_retries,
         llm=llm,
+        knowledge_graph=knowledge_graph,
+        metadata_enricher=metadata_enricher,
+        self_consistency_samples=self_consistency_samples,
     )
 
     initial_state: AgentState = {
@@ -196,6 +243,10 @@ def run_query(
         "relevant_tables": [],
         "schema_context": "",
         "column_samples": "",
+        "kg_context": "",
+        "business_glossary": "",
+        "complexity": "",
+        "sql_candidates": [],
         "few_shot_examples": [],
         "generated_sql": "",
         "execution_result": None,

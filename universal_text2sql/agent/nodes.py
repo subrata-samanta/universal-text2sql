@@ -5,19 +5,22 @@ and returns a *partial* state update (only the keys being modified).
 
 Node overview
 -------------
-1. ``select_schema``   – identify relevant tables from the question.
-2. ``generate_sql``    – produce a SQL query with CoT reasoning.
-3. ``execute_sql``     – run the query against the live database.
-4. ``validate_result`` – check whether the result actually answers the question.
-5. ``reflect``         – diagnose errors and rewrite the SQL.
-6. ``format_answer``   – turn the DataFrame result into a human answer.
-7. ``store_memory``    – persist successful queries for future few-shot use.
+1. ``select_schema``        – semantic + knowledge-graph schema linking.
+2. ``classify_complexity``  – route simple vs. complex questions.
+3. ``generate_sql``         – produce (optionally multiple) SQL candidates via CoT reasoning.
+4. ``select_best_candidate``– self-consistency voting across candidates.
+5. ``execute_sql``          – run the query against the live database.
+6. ``validate_result``      – check whether the result actually answers the question.
+7. ``reflect``               – diagnose errors and rewrite the SQL.
+8. ``format_answer``        – turn the DataFrame result into a human answer.
+9. ``store_memory``         – persist successful queries for future few-shot use.
 """
 
 from __future__ import annotations
 
 import logging
 import re
+from collections import Counter
 from typing import Any, Protocol, runtime_checkable
 
 import pandas as pd
@@ -27,8 +30,11 @@ from universal_text2sql.agent.memory import QueryMemory
 from universal_text2sql.agent.state import AgentState
 from universal_text2sql.database.connector import DatabaseConnector
 from universal_text2sql.database.schema import DatabaseSchema
+from universal_text2sql.knowledge.graph import SchemaKnowledgeGraph
+from universal_text2sql.knowledge.metadata import MetadataEnricher
 from universal_text2sql.prompts.templates import (
     ANSWER_GENERATION_PROMPT,
+    QUERY_COMPLEXITY_PROMPT,
     RESULT_VALIDATION_PROMPT,
     SQL_GENERATION_PROMPT,
     SQL_REFLECTION_PROMPT,
@@ -83,13 +89,23 @@ def select_schema(
     state: AgentState,
     schema: DatabaseSchema,
     memory: QueryMemory,
+    knowledge_graph: SchemaKnowledgeGraph | None = None,
+    metadata_enricher: MetadataEnricher | None = None,
 ) -> dict[str, Any]:
-    """Identify relevant tables and build prompt context."""
+    """Identify relevant tables and build prompt context.
+
+    Schema linking prefers TF-IDF semantic similarity over the table's
+    name/columns/auto-generated glossary (so a question can match a table
+    even without literal keyword overlap); it falls back to plain keyword
+    overlap when the semantic index can't distinguish any table. When a
+    :class:`SchemaKnowledgeGraph` is supplied, the relevant tables' join
+    relationships (declared, inferred, or multi-hop) are rendered into
+    ``kg_context``; when a :class:`MetadataEnricher` is supplied, the
+    business-glossary block is rendered into ``business_glossary``.
+    """
     question = state["question"]
 
-    # Keyword extraction: split question and use word tokens as search terms
-    keywords = [w for w in question.lower().split() if len(w) > 3]
-    relevant = schema.get_relevant_tables(keywords)
+    relevant = schema.get_relevant_tables_semantic(question)
 
     # Fallback: use all tables if nothing matched
     if not relevant:
@@ -100,6 +116,14 @@ def select_schema(
         {t: schema.tables[t] for t in relevant if t in schema.tables}
     )
 
+    kg_context = ""
+    if knowledge_graph is not None:
+        kg_context = knowledge_graph.describe(relevant)
+
+    business_glossary = ""
+    if metadata_enricher is not None:
+        business_glossary = metadata_enricher.glossary_block(schema, relevant)
+
     # Retrieve few-shot examples from memory
     few_shot = memory.get_similar(question, top_k=3)
 
@@ -109,6 +133,8 @@ def select_schema(
         "relevant_tables": relevant,
         "schema_context": schema_ddl,
         "column_samples": column_samples,
+        "kg_context": kg_context,
+        "business_glossary": business_glossary,
         "few_shot_examples": few_shot,
         "messages": [HumanMessage(content=f"Processing question: {question}")],
     }
@@ -123,30 +149,134 @@ def generate_sql(
     state: AgentState,
     llm: LLMRunnable,
     db_type: str,
+    self_consistency_samples: int = 1,
 ) -> dict[str, Any]:
-    """Generate a SQL query using CoT prompting and optional few-shot examples."""
+    """Generate SQL using CoT prompting, few-shot examples, and (optionally) self-consistency.
+
+    When ``self_consistency_samples`` > 1 and the question was classified as
+    at least ``MODERATE`` complexity, multiple candidate queries are sampled
+    from the LLM (mirroring the self-consistency technique from CHASE-SQL /
+    DIN-SQL-style pipelines). All candidates are stored in
+    ``sql_candidates``; the first one is also set as ``generated_sql`` so the
+    rest of the graph behaves identically whether or not self-consistency
+    produced more than one candidate — the ``select_best_candidate`` node
+    decides the final winner by execution voting.
+    """
     few_shot_block = build_few_shot_block(state.get("few_shot_examples", []))
+    prompt_input = {
+        "db_type": db_type,
+        "schema_ddl": state["schema_context"],
+        "column_samples": state["column_samples"],
+        "kg_context": state.get("kg_context", ""),
+        "business_glossary": state.get("business_glossary", ""),
+        "few_shot_block": few_shot_block,
+        "question": state["question"],
+    }
+
+    n_samples = 1 if state.get("complexity", "").upper() == "SIMPLE" else max(1, self_consistency_samples)
 
     chain = SQL_GENERATION_PROMPT | llm
+    candidates: list[str] = []
+    for _ in range(n_samples):
+        response = chain.invoke(prompt_input)
+        raw_sql = response.content if hasattr(response, "content") else str(response)
+        sql = _extract_sql(raw_sql)
+        if sql and sql not in candidates:
+            candidates.append(sql)
+    if not candidates:
+        candidates = [""]
+
+    logger.info("Generated %d SQL candidate(s); primary: %s", len(candidates), candidates[0])
+
+    return {
+        "generated_sql": candidates[0],
+        "sql_candidates": candidates,
+        "execution_error": "",
+        "messages": [AIMessage(content=f"Generated SQL:\n```sql\n{candidates[0]}\n```")],
+    }
+
+
+# ---------------------------------------------------------------------------
+# Node: classify_complexity
+# ---------------------------------------------------------------------------
+
+
+def classify_complexity(
+    state: AgentState,
+    llm: LLMRunnable,
+) -> dict[str, Any]:
+    """Classify question difficulty to route self-consistency sampling.
+
+    DIN-SQL-style difficulty routing: cheap single-shot generation for
+    simple lookups, multi-candidate self-consistency reserved for questions
+    that actually need multiple joins/aggregation/subqueries.
+    """
+    chain = QUERY_COMPLEXITY_PROMPT | llm
     response = chain.invoke(
         {
-            "db_type": db_type,
-            "schema_ddl": state["schema_context"],
-            "column_samples": state["column_samples"],
-            "few_shot_block": few_shot_block,
+            "schema_ddl": state.get("schema_context", ""),
             "question": state["question"],
         }
     )
+    raw = response.content if hasattr(response, "content") else str(response)
+    label = raw.strip().upper()
+    complexity = next((c for c in ("SIMPLE", "MODERATE", "COMPLEX") if c in label), "MODERATE")
+    logger.info("Classified query complexity: %s", complexity)
+    return {"complexity": complexity}
 
-    raw_sql = response.content if hasattr(response, "content") else str(response)
-    sql = _extract_sql(raw_sql)
-    logger.info("Generated SQL: %s", sql)
 
-    return {
-        "generated_sql": sql,
-        "execution_error": "",
-        "messages": [AIMessage(content=f"Generated SQL:\n```sql\n{sql}\n```")],
-    }
+# ---------------------------------------------------------------------------
+# Node: select_best_candidate (self-consistency voting)
+# ---------------------------------------------------------------------------
+
+
+def _result_signature(df: pd.DataFrame | None) -> str:
+    """Order-independent signature of a query result, for grouping candidates."""
+    if df is None:
+        return "<empty>"
+    try:
+        rows = sorted(tuple(str(v) for v in row) for row in df.itertuples(index=False))
+        cols = sorted(str(c) for c in df.columns)
+        return f"{len(rows)}::{cols}::" + "|".join(",".join(r) for r in rows)
+    except Exception:
+        return str(df)
+
+
+def select_best_candidate(
+    state: AgentState,
+    connector: DatabaseConnector,
+) -> dict[str, Any]:
+    """Execute every self-consistency candidate and pick the majority result.
+
+    A no-op (returns ``{}``) when only one candidate was generated — the
+    overwhelmingly common case — so the ``execute_sql``/``reflect`` loop
+    behaves exactly as it did before self-consistency sampling existed.
+    """
+    candidates = state.get("sql_candidates") or []
+    if len(candidates) <= 1:
+        return {}
+
+    groups: dict[str, list[str]] = {}
+    first_error: tuple[str, str] | None = None
+    for sql in candidates:
+        try:
+            df = connector.execute_query(sql)
+            groups.setdefault(_result_signature(df), []).append(sql)
+        except Exception as exc:
+            if first_error is None:
+                first_error = (sql, str(exc))
+
+    if not groups:
+        logger.info("Self-consistency: all %d candidates failed execution.", len(candidates))
+        return {"generated_sql": first_error[0]}
+
+    winning_group = max(groups.values(), key=len)
+    logger.info(
+        "Self-consistency: %d/%d candidates agreed on the winning SQL.",
+        len(winning_group),
+        len(candidates),
+    )
+    return {"generated_sql": winning_group[0]}
 
 
 # ---------------------------------------------------------------------------
@@ -233,6 +363,7 @@ def reflect(
         {
             "db_type": db_type,
             "schema_ddl": state["schema_context"],
+            "kg_context": state.get("kg_context", ""),
             "previous_sql": state["generated_sql"],
             "error_message": error_message,
             "question": state["question"],

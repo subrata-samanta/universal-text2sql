@@ -5,17 +5,18 @@ Usage
 -----
     python main.py                        # interactive mode
     python main.py "How many customers?"  # single query mode
+    python main.py --graph                # print the auto-built knowledge graph and exit
+    python main.py --glossary             # print the auto-generated business glossary and exit
 
 Environment
 -----------
-    GROQ_API_KEY   – required
+    GROQ_API_KEY   – required for SQL generation (optional for --graph)
     DATABASE_URL   – optional (defaults to in-memory SQLite demo)
 """
 
 from __future__ import annotations
 
 import logging
-import os
 import sys
 
 from dotenv import load_dotenv
@@ -27,49 +28,42 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s – %(message)s",
 )
 
-from universal_text2sql.agent.graph import run_query
-from universal_text2sql.agent.memory import QueryMemory
-from universal_text2sql.database.connector import DatabaseConnector
-from universal_text2sql.database.schema import SchemaDiscovery
-from universal_text2sql.utils.demo_data import seed_demo_database
+from universal_text2sql.bootstrap import AgentContext, bootstrap
 
 
 def _print_banner() -> None:
     print("\n" + "=" * 60)
     print("   Universal Text-to-SQL Agent  (LangGraph + Groq)")
+    print("   Auto schema discovery · knowledge graph · glossary")
     print("=" * 60 + "\n")
 
 
-def _setup() -> tuple[DatabaseConnector, object, QueryMemory]:
-    db_url = os.getenv("DATABASE_URL", "sqlite:///:memory:")
-    print(f"📡 Connecting to: {db_url}")
-    connector = DatabaseConnector(db_url)
-    seed_demo_database(connector)
+def _setup() -> AgentContext:
+    ctx = bootstrap()
+    print(f"📡 Connected: {ctx.connector.connection_url}")
+    table_list = ", ".join(ctx.schema.tables.keys())
+    print(f"🔍 Schema discovered – tables: {table_list}")
+    print(
+        f"🕸️  Knowledge graph: {ctx.knowledge_graph.graph.number_of_nodes()} nodes, "
+        f"{ctx.knowledge_graph.graph.number_of_edges()} edges"
+    )
+    if ctx.llm is None:
+        print("⚠️  GROQ_API_KEY is not set. SQL generation will fail until it is configured.")
+    print()
+    return ctx
 
-    print("🔍 Discovering schema …")
-    schema = SchemaDiscovery(connector).discover()
-    table_list = ", ".join(schema.tables.keys())
-    print(f"✅ Schema ready – tables: {table_list}\n")
 
-    enabled = os.getenv("ENABLE_QUERY_MEMORY", "true").lower() == "true"
-    memory = QueryMemory(enabled=enabled)
-    return connector, schema, memory
-
-
-def _ask(question: str, connector, schema, memory) -> None:
-    max_retries = int(os.getenv("MAX_RETRIES", "3"))
+def _ask(question: str, ctx: AgentContext) -> None:
     print(f"\n❓ {question}")
     print("⏳ Processing …")
 
-    result = run_query(
-        question=question,
-        connector=connector,
-        schema=schema,
-        memory=memory,
-        max_retries=max_retries,
-    )
+    result = ctx.ask(question)
 
     print(f"\n📝 SQL:\n{result.get('generated_sql', '')}")
+    if result.get("complexity"):
+        print(f"🧮 Complexity: {result['complexity']}")
+    if len(result.get("sql_candidates", []) or []) > 1:
+        print(f"🗳️  Self-consistency: {len(result['sql_candidates'])} candidates sampled")
     retries = result.get("retry_count", 0)
     if retries:
         print(f"🔁 Self-reflected {retries} time(s)")
@@ -86,16 +80,22 @@ def _ask(question: str, connector, schema, memory) -> None:
 def main() -> None:
     _print_banner()
 
-    if not os.getenv("GROQ_API_KEY"):
-        print("⚠️  GROQ_API_KEY is not set. Export it or create a .env file.")
-        print("   Example: export GROQ_API_KEY=your_key_here\n")
+    if "--graph" in sys.argv:
+        ctx = bootstrap()
+        print(ctx.describe_knowledge_graph())
+        return
 
-    connector, schema, memory = _setup()
+    if "--glossary" in sys.argv:
+        ctx = bootstrap()
+        print(ctx.describe_glossary())
+        return
+
+    ctx = _setup()
 
     # Single-shot mode (argument provided)
-    if len(sys.argv) > 1:
-        question = " ".join(sys.argv[1:])
-        _ask(question, connector, schema, memory)
+    args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    if args:
+        _ask(" ".join(args), ctx)
         return
 
     # Interactive mode
@@ -111,12 +111,8 @@ def main() -> None:
         if question.lower() in {"exit", "quit", "q"}:
             print("Goodbye! 👋")
             break
-        _ask(question, connector, schema, memory)
+        _ask(question, ctx)
 
 
 if __name__ == "__main__":
-    print("main")
-
-
-    print("new")
     main()
