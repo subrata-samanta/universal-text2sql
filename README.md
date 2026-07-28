@@ -77,25 +77,26 @@ object both the CLI and the Streamlit UI drive.
 
 ```mermaid
 flowchart TB
-    CLI["main.py (CLI)"] --> CONN
-    UI["app.py (Streamlit UI)"] --> CONN
-    LIB["Library caller<br/>(your own script)"] --> CONN
+    CLI["main.py (CLI)"]
+    UI["app.py (Streamlit UI)"]
+    LIB["Library caller<br/>your own script"]
 
-    subgraph BOOT["bootstrap() builds an AgentContext"]
-        direction TB
-        CONN["DatabaseConnector<br/>(any SQLAlchemy URL)"] --> DISC["SchemaDiscovery<br/>tables / columns / PK-FK / samples"]
-        DISC --> KG["SchemaKnowledgeGraph<br/>declared + inferred joins"]
-        DISC --> META["MetadataEnricher<br/>heuristic + LLM glossary, cached"]
-        MEM["QueryMemory<br/>RL-weighted few-shot store"]
-    end
+    CLI --> CONN
+    UI --> CONN
+    LIB --> CONN
 
-    KG --> CTX["AgentContext.ask(question)"]
+    CONN["DatabaseConnector<br/>any SQLAlchemy URL"] --> DISC["SchemaDiscovery<br/>tables / columns / PK-FK / samples"]
+    DISC --> KG["SchemaKnowledgeGraph<br/>declared + inferred joins"]
+    DISC --> META["MetadataEnricher<br/>heuristic + LLM glossary, cached"]
+    MEM["QueryMemory<br/>RL-weighted few-shot store"]
+
+    KG --> CTX["AgentContext.ask question"]
     META --> CTX
     MEM --> CTX
-    CTX --> GRAPH["LangGraph agent<br/>(see node diagram below)"]
+    CTX --> GRAPH["LangGraph agent<br/>see node diagram below"]
     GRAPH --> DB[("Target Database")]
-    GRAPH --> LLMBOX["Groq LLM (ChatGroq)"]
-    GRAPH --> MEM
+    GRAPH --> LLMBOX["Groq LLM ChatGroq"]
+    GRAPH -. writes back .-> MEM
     GRAPH --> ANSWER["final_answer + generated_sql<br/>+ execution_result + trace"]
 ```
 
