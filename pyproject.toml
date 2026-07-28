@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "universal-text2sql"
-version = "0.2.0"
+version = "0.3.0"
 description = "A universal, agentic Natural Language to SQL system that works against any database — auto schema discovery, auto knowledge graph, auto business glossary."
 readme = "README.md"
 license = { text = "MIT" }
@@ -45,6 +45,35 @@ dev = [
     "pytest-cov>=5.0.0",
     "ruff>=0.6.0",
     "pre-commit>=3.7.0",
+]
+# Stronger, AST-based SQL statement classification for the read-only safety
+# guardrail (universal_text2sql.database.safety). Optional: the zero-dependency
+# regex baseline is always active; sqlglot adds robustness against CTE-wrapped
+# writes and similar cases the regex baseline can't fully see.
+safety = [
+    "sqlglot>=25.0.0",
+]
+# Stronger fuzzy matching for value/entity grounding
+# (universal_text2sql.knowledge.grounding). Optional: the zero-dependency
+# substring + difflib baseline is always active; rapidfuzz improves recall
+# on reordered/abbreviated question phrases.
+fuzzy = [
+    "rapidfuzz>=3.0.0",
+]
+# Alternative LLM providers (universal_text2sql.llm.factory). Groq is the
+# only provider in core `dependencies`; these are opt-in so installing the
+# base package never pulls in an SDK you don't use.
+openai = [
+    "langchain-openai>=0.2.0",
+]
+anthropic = [
+    "langchain-anthropic>=0.2.0",
+]
+ollama = [
+    "langchain-ollama>=0.2.0",
+]
+all-providers = [
+    "universal-text2sql[openai,anthropic,ollama]",
 ]
 
 [project.urls]

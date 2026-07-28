@@ -12,7 +12,10 @@ and it will, with zero manual setup:
 4. Auto-generate a business glossary — heuristic descriptions always,
    LLM-written descriptions/synonyms additionally when an LLM is available
    (see :mod:`universal_text2sql.knowledge.metadata`), cached to disk.
-5. Load the RL-inspired query memory used for dynamic few-shot prompting.
+5. Profile low-cardinality text columns for value/entity grounding, so
+   filter literals can be matched against real stored values (see
+   :mod:`universal_text2sql.knowledge.grounding`), cached to disk.
+6. Load the RL-inspired query memory used for dynamic few-shot prompting.
 
 The returned :class:`AgentContext` bundles all of it behind a single
 ``.ask(question)`` call.
@@ -27,11 +30,12 @@ from typing import Any
 
 from universal_text2sql.agent.graph import run_query
 from universal_text2sql.agent.memory import QueryMemory
-from universal_text2sql.agent.nodes import LLMRunnable
 from universal_text2sql.database.connector import DatabaseConnector
 from universal_text2sql.database.schema import DatabaseSchema, SchemaDiscovery
 from universal_text2sql.knowledge.graph import SchemaKnowledgeGraph
+from universal_text2sql.knowledge.grounding import ValueGroundingIndex
 from universal_text2sql.knowledge.metadata import MetadataEnricher
+from universal_text2sql.llm.base import LLMRunnable
 
 logger = logging.getLogger(__name__)
 
@@ -45,12 +49,27 @@ class AgentContext:
     knowledge_graph: SchemaKnowledgeGraph
     metadata_enricher: MetadataEnricher
     memory: QueryMemory
+    grounding_index: ValueGroundingIndex | None = None
     llm: LLMRunnable | None = None
     max_retries: int = 3
     self_consistency_samples: int = 1
+    enable_query_decomposition: bool = False
 
-    def ask(self, question: str) -> dict[str, Any]:
-        """Run a single natural language question through the agent graph."""
+    def ask(
+        self, question: str, conversation_history: list[dict[str, str]] | None = None
+    ) -> dict[str, Any]:
+        """Run a single natural language question through the agent graph.
+
+        Args:
+            question: The natural language question.
+            conversation_history: Optional prior turns for multi-turn
+                follow-up questions (e.g. "now filter that by country") --
+                see :func:`~universal_text2sql.agent.graph.run_query`.
+                Caller-owned: this method doesn't accumulate history
+                itself, so a session (``main.py``'s interactive loop,
+                ``app.py``'s Streamlit session state) must pass the growing
+                list back in on each turn.
+        """
         return run_query(
             question=question,
             connector=self.connector,
@@ -60,7 +79,10 @@ class AgentContext:
             llm=self.llm,
             knowledge_graph=self.knowledge_graph,
             metadata_enricher=self.metadata_enricher,
+            grounding_index=self.grounding_index,
             self_consistency_samples=self.self_consistency_samples,
+            enable_query_decomposition=self.enable_query_decomposition,
+            conversation_history=conversation_history,
         )
 
     def describe_knowledge_graph(self) -> str:
@@ -71,16 +93,32 @@ class AgentContext:
         """Full auto-generated business glossary, e.g. for a UI sidebar."""
         return self.metadata_enricher.glossary_block(self.schema)
 
+    def describe_grounding(self) -> str:
+        """Summary of which columns were profiled for value grounding, e.g. for a UI sidebar."""
+        if self.grounding_index is None or not self.grounding_index.profiles:
+            return "No categorical columns were profiled for value grounding."
+        lines = ["## Value Grounding — Profiled Columns"]
+        for profile in self.grounding_index.profiles:
+            preview = ", ".join(profile.distinct_values[:5])
+            remaining = len(profile.distinct_values) - 5
+            if remaining > 0:
+                preview += f" (+{remaining} more)"
+            lines.append(f"  {profile.table}.{profile.column}: {preview}")
+        return "\n".join(lines)
+
 
 def bootstrap(
     database_url: str | None = None,
     llm: LLMRunnable | None = None,
     enable_metadata_enrichment: bool | None = None,
     enable_knowledge_graph: bool = True,
+    enable_value_grounding: bool | None = None,
     enable_query_memory: bool | None = None,
     seed_demo: bool = True,
     max_retries: int | None = None,
     self_consistency_samples: int | None = None,
+    enable_query_decomposition: bool | None = None,
+    read_only: bool | None = None,
 ) -> AgentContext:
     """Connect to *any* SQLAlchemy-supported database and prepare the agent.
 
@@ -99,6 +137,12 @@ def bootstrap(
             generated regardless of this flag.
         enable_knowledge_graph: Build the schema knowledge graph (default
             ``True``; cheap, no LLM calls).
+        enable_value_grounding: Profile low-cardinality text columns and
+            match question terms against real column values (see
+            :mod:`universal_text2sql.knowledge.grounding`). Defaults to the
+            ``ENABLE_VALUE_GROUNDING`` env var (``True``); profiling issues
+            a couple of ``SELECT`` queries per candidate column but is
+            bounded and cached to disk, so repeat bootstraps are free.
         enable_query_memory: Toggle the RL-inspired few-shot query memory.
             Defaults to the ``ENABLE_QUERY_MEMORY`` env var.
         seed_demo: When the target database has no tables, seed it with a
@@ -107,6 +151,16 @@ def bootstrap(
         self_consistency_samples: SQL candidates sampled for non-trivial
             questions. Defaults to ``SELF_CONSISTENCY_SAMPLES`` (``1``,
             i.e. self-consistency disabled, since it multiplies LLM calls).
+        enable_query_decomposition: Route COMPLEX questions through
+            DIN-SQL-style sub-question decomposition + CTE composition
+            instead of single-shot generation. Defaults to the
+            ``ENABLE_QUERY_DECOMPOSITION`` env var (``False``, an opt-in
+            strategy -- mutually exclusive with self-consistency sampling
+            for a given question).
+        read_only: Whether the connector enforces read-only SQL (blocking
+            LLM-generated INSERT/UPDATE/DELETE/DDL). Defaults to the
+            ``SQL_READ_ONLY`` env var (``True``) — see
+            :mod:`universal_text2sql.database.safety`.
 
     Returns:
         A ready-to-use :class:`AgentContext`.
@@ -114,7 +168,7 @@ def bootstrap(
     db_url = database_url or os.getenv("DATABASE_URL", "sqlite:///:memory:")
     logger.info("Bootstrapping universal text-to-SQL agent for %s", db_url)
 
-    connector = DatabaseConnector(db_url)
+    connector = DatabaseConnector(db_url, read_only=read_only)
 
     if seed_demo and not connector.get_table_names():
         from universal_text2sql.utils.demo_data import seed_demo_database
@@ -127,6 +181,10 @@ def bootstrap(
     knowledge_graph = (
         SchemaKnowledgeGraph.build(schema) if enable_knowledge_graph else SchemaKnowledgeGraph()
     )
+
+    if enable_value_grounding is None:
+        enable_value_grounding = os.getenv("ENABLE_VALUE_GROUNDING", "true").lower() == "true"
+    grounding_index = ValueGroundingIndex.build(schema, connector) if enable_value_grounding else None
 
     if llm is None:
         llm = _default_llm()
@@ -150,6 +208,11 @@ def bootstrap(
         if self_consistency_samples is not None
         else int(os.getenv("SELF_CONSISTENCY_SAMPLES", "1"))
     )
+    resolved_decomposition = (
+        enable_query_decomposition
+        if enable_query_decomposition is not None
+        else os.getenv("ENABLE_QUERY_DECOMPOSITION", "false").lower() == "true"
+    )
 
     return AgentContext(
         connector=connector,
@@ -157,19 +220,31 @@ def bootstrap(
         knowledge_graph=knowledge_graph,
         metadata_enricher=metadata_enricher,
         memory=memory,
+        grounding_index=grounding_index,
         llm=llm,
         max_retries=resolved_max_retries,
         self_consistency_samples=resolved_samples,
+        enable_query_decomposition=resolved_decomposition,
     )
 
 
 def _default_llm() -> LLMRunnable | None:
-    if not os.getenv("GROQ_API_KEY"):
+    """Build the default LLM from ``LLM_PROVIDER`` (default ``groq``).
+
+    Preserves the original zero-config behaviour exactly: when
+    ``LLM_PROVIDER`` is unset (or explicitly ``"groq"``) and
+    ``GROQ_API_KEY`` isn't set, this returns ``None`` (heuristics-only
+    mode) rather than constructing a client with an empty key. Other
+    providers (``openai``/``anthropic``/``ollama``) are attempted whenever
+    selected, since e.g. Ollama needs no API key at all.
+    """
+    from universal_text2sql.llm.factory import get_llm
+
+    provider = os.getenv("LLM_PROVIDER", "groq").lower()
+    if provider == "groq" and not os.getenv("GROQ_API_KEY"):
         return None
     try:
-        from universal_text2sql.llm.groq_client import get_groq_llm
-
-        return get_groq_llm()
+        return get_llm(provider)
     except Exception as exc:  # pragma: no cover - defensive
-        logger.warning("Could not initialise default LLM: %s", exc)
+        logger.warning("Could not initialise default LLM (provider=%s): %s", provider, exc)
         return None

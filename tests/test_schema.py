@@ -122,3 +122,17 @@ class TestSchemaDiscovery:
         data = json.loads(schema.to_json())
         assert "tables" in data
         assert "customers" in data["tables"]
+
+    def test_signature_hash_is_deterministic(self, schema):
+        assert schema.signature_hash() == schema.signature_hash()
+        assert len(schema.signature_hash()) == 16
+
+    def test_signature_hash_changes_with_schema(self, schema, connector):
+        from universal_text2sql.database.schema import ColumnMetadata, TableMetadata
+
+        other = SchemaDiscovery(connector).discover()
+        other.tables["extra_table"] = TableMetadata(
+            name="extra_table",
+            columns=[ColumnMetadata(name="id", data_type="INTEGER", nullable=False, primary_key=True)],
+        )
+        assert schema.signature_hash() != other.signature_hash()

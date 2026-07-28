@@ -1,4 +1,4 @@
-.PHONY: install dev-install test test-cov lint format run ui clean
+.PHONY: install dev-install test test-cov lint format run ui eval clean
 
 install:
 	pip install -r requirements.txt
@@ -25,6 +25,9 @@ run:
 
 ui:
 	streamlit run app.py
+
+eval:
+	python -m eval.cli --mock
 
 clean:
 	find . -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true

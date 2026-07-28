@@ -108,7 +108,7 @@ class _FakeConnector:
     def __init__(self, responses: dict[str, object]) -> None:
         self._responses = responses
 
-    def execute_query(self, sql: str) -> pd.DataFrame:
+    def execute_query(self, sql: str, **kwargs: object) -> pd.DataFrame:
         result = self._responses[sql]
         if isinstance(result, Exception):
             raise result

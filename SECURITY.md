@@ -30,12 +30,19 @@ a reasonable window to ship a fix before disclosing publicly.
 A few things worth knowing if you're evaluating this project's attack
 surface:
 
-- **SQL execution**: the agent executes LLM-generated SQL against the
-  configured database. It does not sandbox or restrict statement types
-  beyond what the underlying database user's permissions allow. **Always run
-  this agent against a database user with read-only / least-privilege
-  access** unless you have reviewed and trust the SQL generation path for
-  your use case. Treat LLM output as untrusted input to your database.
+- **SQL execution**: `DatabaseConnector` enforces **read-only SQL by
+  default** (`SQL_READ_ONLY=true`) — LLM-generated `INSERT`/`UPDATE`/
+  `DELETE`/`DROP`/`ALTER`/etc. are classified and blocked before touching
+  the database (see `universal_text2sql/database/safety.py`). This is a
+  defense-in-depth measure, not a substitute for database-level permissions:
+  the zero-dependency regex classifier can be fooled by sufficiently
+  obscure SQL, and even the stronger optional `sqlglot`-based AST
+  classifier (`pip install universal-text2sql[safety]`) is heuristic, not a
+  formal guarantee. **Still always run this agent against a database user
+  with read-only / least-privilege access** as the primary control; treat
+  this guardrail as an additional layer, not the only one. Report any SQL
+  that should have been classified as a write but wasn't as a
+  vulnerability.
 - **Prompt injection**: table/column names, sample values, and stored query
   memory are interpolated into LLM prompts. A malicious or compromised
   database (e.g. attacker-controlled row data) could attempt to influence

@@ -8,55 +8,49 @@ Node overview
 1. ``select_schema``        – semantic + knowledge-graph schema linking.
 2. ``classify_complexity``  – route simple vs. complex questions.
 3. ``generate_sql``         – produce (optionally multiple) SQL candidates via CoT reasoning.
-4. ``select_best_candidate``– self-consistency voting across candidates.
-5. ``execute_sql``          – run the query against the live database.
-6. ``validate_result``      – check whether the result actually answers the question.
-7. ``reflect``               – diagnose errors and rewrite the SQL.
-8. ``format_answer``        – turn the DataFrame result into a human answer.
-9. ``store_memory``         – persist successful queries for future few-shot use.
+4. ``decompose_sql``        – alternative to generate_sql for COMPLEX questions when
+                               enabled: break into sub-questions, compose SQL via CTEs.
+5. ``select_best_candidate``– self-consistency voting across candidates.
+6. ``execute_sql``          – run the query against the live database.
+7. ``validate_result``      – check whether the result actually answers the question.
+8. ``reflect``               – diagnose errors and rewrite the SQL.
+9. ``format_answer``        – turn the DataFrame result into a human answer.
+10. ``store_memory``        – persist successful queries for future few-shot use.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import re
-from typing import Any, Protocol, runtime_checkable
+from typing import Any
 
 import pandas as pd
 from langchain_core.messages import AIMessage, HumanMessage
 
 from universal_text2sql.agent.memory import QueryMemory
+from universal_text2sql.agent.scoring import result_signature
 from universal_text2sql.agent.state import AgentState
 from universal_text2sql.database.connector import DatabaseConnector
 from universal_text2sql.database.schema import DatabaseSchema
 from universal_text2sql.knowledge.graph import SchemaKnowledgeGraph
+from universal_text2sql.knowledge.grounding import ValueGroundingIndex
 from universal_text2sql.knowledge.metadata import MetadataEnricher
+from universal_text2sql.llm.base import LLMRunnable
 from universal_text2sql.prompts.templates import (
     ANSWER_GENERATION_PROMPT,
     QUERY_COMPLEXITY_PROMPT,
+    QUERY_DECOMPOSITION_PROMPT,
     RESULT_VALIDATION_PROMPT,
     SQL_GENERATION_PROMPT,
     SQL_REFLECTION_PROMPT,
+    SQL_SUBQUERY_PROMPT,
     build_column_samples_block,
+    build_cte_block,
     build_few_shot_block,
 )
 
 logger = logging.getLogger(__name__)
-
-
-@runtime_checkable
-class LLMRunnable(Protocol):
-    """Minimal protocol for a LangChain-compatible chat LLM.
-
-    Both :class:`~langchain_groq.ChatGroq` and
-    :class:`~langchain_core.runnables.RunnableLambda` satisfy this protocol.
-    """
-
-    def invoke(self, input: Any, **kwargs: Any) -> Any:  # noqa: A002
-        ...
-
-    def __or__(self, other: Any) -> Any:
-        ...
 
 
 def _extract_sql(text: str) -> str:
@@ -67,6 +61,25 @@ def _extract_sql(text: str) -> str:
     # Strip leading "SQL:" label the LLM sometimes emits
     text = re.sub(r"^\s*SQL\s*:\s*", "", text, flags=re.IGNORECASE)
     return text.strip()
+
+
+def _parse_json_list(raw: str) -> list[str]:
+    """Best-effort parse of a JSON string-array LLM response; ``[]`` on failure."""
+    text = re.sub(r"^```(json)?\s*", "", raw.strip())
+    text = re.sub(r"```\s*$", "", text)
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        match = re.search(r"\[.*\]", text, re.DOTALL)
+        if not match:
+            return []
+        try:
+            data = json.loads(match.group(0))
+        except json.JSONDecodeError:
+            return []
+    if not isinstance(data, list):
+        return []
+    return [str(item).strip() for item in data if str(item).strip()]
 
 
 def _df_preview(df: pd.DataFrame, max_rows: int = 5) -> str:
@@ -90,6 +103,7 @@ def select_schema(
     memory: QueryMemory,
     knowledge_graph: SchemaKnowledgeGraph | None = None,
     metadata_enricher: MetadataEnricher | None = None,
+    grounding_index: ValueGroundingIndex | None = None,
 ) -> dict[str, Any]:
     """Identify relevant tables and build prompt context.
 
@@ -100,7 +114,9 @@ def select_schema(
     :class:`SchemaKnowledgeGraph` is supplied, the relevant tables' join
     relationships (declared, inferred, or multi-hop) are rendered into
     ``kg_context``; when a :class:`MetadataEnricher` is supplied, the
-    business-glossary block is rendered into ``business_glossary``.
+    business-glossary block is rendered into ``business_glossary``; when a
+    :class:`ValueGroundingIndex` is supplied, question terms matched
+    against real column values are rendered into ``grounding_hints``.
     """
     question = state["question"]
 
@@ -123,6 +139,10 @@ def select_schema(
     if metadata_enricher is not None:
         business_glossary = metadata_enricher.glossary_block(schema, relevant)
 
+    grounding_hints = ""
+    if grounding_index is not None:
+        grounding_hints = grounding_index.hints_block(grounding_index.match(question, relevant))
+
     # Retrieve few-shot examples from memory
     few_shot = memory.get_similar(question, top_k=3)
 
@@ -134,6 +154,7 @@ def select_schema(
         "column_samples": column_samples,
         "kg_context": kg_context,
         "business_glossary": business_glossary,
+        "grounding_hints": grounding_hints,
         "few_shot_examples": few_shot,
         "messages": [HumanMessage(content=f"Processing question: {question}")],
     }
@@ -168,6 +189,8 @@ def generate_sql(
         "column_samples": state["column_samples"],
         "kg_context": state.get("kg_context", ""),
         "business_glossary": state.get("business_glossary", ""),
+        "grounding_hints": state.get("grounding_hints", ""),
+        "conversation_context": state.get("conversation_context", ""),
         "few_shot_block": few_shot_block,
         "question": state["question"],
     }
@@ -192,6 +215,121 @@ def generate_sql(
         "sql_candidates": candidates,
         "execution_error": "",
         "messages": [AIMessage(content=f"Generated SQL:\n```sql\n{candidates[0]}\n```")],
+    }
+
+
+# ---------------------------------------------------------------------------
+# Node: decompose_sql (query decomposition, DIN-SQL-style)
+# ---------------------------------------------------------------------------
+
+_FINAL_STEP_INSTRUCTIONS = (
+    "This is the FINAL step. Return ONLY the complete SQL SELECT statement that answers the "
+    "Original Question (no leading WITH keyword -- the prior steps' CTEs are prepended "
+    "automatically), and may reference the Prior Steps' aliases as if they were tables."
+)
+_INTERMEDIATE_STEP_INSTRUCTIONS = (
+    "Return ONLY the SQL SELECT body for this sub-question (no leading WITH keyword, no "
+    "trailing semicolon) -- it becomes `step_N AS (<your answer>)`, and may reference the "
+    "Prior Steps' aliases as if they were tables."
+)
+
+
+def _compose_cte_query(steps: list[dict[str, str]]) -> str:
+    """Compose ``WITH step_1 AS (...), ..., step_{N-1} AS (...) {final}`` from ordered steps.
+
+    The last step's fragment is the final ``SELECT`` (not itself wrapped in
+    a CTE); every earlier step becomes a named CTE that it -- and later
+    steps -- can reference like an ordinary table.
+    """
+    if len(steps) == 1:
+        return steps[0]["sql_fragment"]
+    cte_parts = [f"step_{i} AS (\n{step['sql_fragment']}\n)" for i, step in enumerate(steps[:-1], 1)]
+    return "WITH " + ",\n".join(cte_parts) + f"\n{steps[-1]['sql_fragment']}"
+
+
+def decompose_sql(
+    state: AgentState,
+    llm: LLMRunnable,
+    db_type: str,
+) -> dict[str, Any]:
+    """Break a COMPLEX question into ordered sub-questions and compose their SQL via CTEs.
+
+    DIN-SQL-style decomposition: (1) one LLM call plans an ordered list of
+    sub-questions, (2) one LLM call per sub-question generates its SQL
+    fragment, chained together as CTEs, (3) the fragments are composed into
+    a single query. If planning produces no usable sub-questions, or any
+    fragment fails to generate/parse, this falls back to the normal
+    single-shot :func:`generate_sql` path rather than ever emitting broken
+    SQL -- decomposition can only match or improve on the baseline, never
+    regress below it.
+    """
+    question = state["question"]
+    common_context = {
+        "db_type": db_type,
+        "schema_ddl": state["schema_context"],
+        "kg_context": state.get("kg_context", ""),
+        "business_glossary": state.get("business_glossary", ""),
+        "grounding_hints": state.get("grounding_hints", ""),
+        "question": question,
+    }
+
+    plan_chain = QUERY_DECOMPOSITION_PROMPT | llm
+    try:
+        response = plan_chain.invoke(common_context)
+        raw = response.content if hasattr(response, "content") else str(response)
+        sub_questions = _parse_json_list(raw)
+    except Exception as exc:
+        logger.warning("Query decomposition planning failed (%s); falling back to single-shot.", exc)
+        sub_questions = []
+
+    if not sub_questions:
+        return generate_sql(state, llm=llm, db_type=db_type)
+
+    steps: list[dict[str, str]] = []
+    sub_chain = SQL_SUBQUERY_PROMPT | llm
+    for i, sub_question in enumerate(sub_questions):
+        is_final = i == len(sub_questions) - 1
+        try:
+            response = sub_chain.invoke(
+                {
+                    **common_context,
+                    "prior_steps": build_cte_block(steps),
+                    "sub_question": sub_question,
+                    "step_instructions": (
+                        _FINAL_STEP_INSTRUCTIONS if is_final else _INTERMEDIATE_STEP_INSTRUCTIONS
+                    ),
+                }
+            )
+            raw_sql = response.content if hasattr(response, "content") else str(response)
+            fragment = _extract_sql(raw_sql)
+        except Exception as exc:
+            logger.warning("Sub-question SQL generation failed (%s); falling back to single-shot.", exc)
+            return generate_sql(state, llm=llm, db_type=db_type)
+
+        if not fragment:
+            logger.warning("Empty SQL fragment for a decomposition step; falling back to single-shot.")
+            return generate_sql(state, llm=llm, db_type=db_type)
+
+        steps.append({"sub_question": sub_question, "sql_fragment": fragment})
+
+    composed_sql = _compose_cte_query(steps)
+    logger.info("Decomposed into %d sub-question(s); composed SQL generated.", len(steps))
+
+    return {
+        "generated_sql": composed_sql,
+        "sql_candidates": [composed_sql],
+        "sub_questions": sub_questions,
+        "decomposition_steps": steps,
+        "execution_error": "",
+        "messages": [
+            AIMessage(
+                content=(
+                    f"Decomposed into {len(steps)} sub-question(s):\n"
+                    + "\n".join(f"{i}. {s}" for i, s in enumerate(sub_questions, 1))
+                    + f"\n\nComposed SQL:\n```sql\n{composed_sql}\n```"
+                )
+            )
+        ],
     }
 
 
@@ -229,16 +367,9 @@ def classify_complexity(
 # ---------------------------------------------------------------------------
 
 
-def _result_signature(df: pd.DataFrame | None) -> str:
-    """Order-independent signature of a query result, for grouping candidates."""
-    if df is None:
-        return "<empty>"
-    try:
-        rows = sorted(tuple(str(v) for v in row) for row in df.itertuples(index=False))
-        cols = sorted(str(c) for c in df.columns)
-        return f"{len(rows)}::{cols}::" + "|".join(",".join(r) for r in rows)
-    except Exception:
-        return str(df)
+_result_signature = result_signature  # local alias, kept for call-site brevity below
+
+_SELF_CONSISTENCY_PREVIEW_LIMIT = 200
 
 
 def select_best_candidate(
@@ -250,6 +381,11 @@ def select_best_candidate(
     A no-op (returns ``{}``) when only one candidate was generated — the
     overwhelmingly common case — so the ``execute_sql``/``reflect`` loop
     behaves exactly as it did before self-consistency sampling existed.
+
+    Candidate executions are capped with ``limit=`` (they're only used to
+    vote on which SQL text wins, not returned to the user) — the winning
+    query is re-executed unbounded by ``execute_sql`` afterwards, so this
+    never truncates the actual answer.
     """
     candidates = state.get("sql_candidates") or []
     if len(candidates) <= 1:
@@ -259,7 +395,7 @@ def select_best_candidate(
     first_error: tuple[str, str] | None = None
     for sql in candidates:
         try:
-            df = connector.execute_query(sql)
+            df = connector.execute_query(sql, limit=_SELF_CONSISTENCY_PREVIEW_LIMIT)
             groups.setdefault(_result_signature(df), []).append(sql)
         except Exception as exc:
             if first_error is None:
@@ -363,6 +499,7 @@ def reflect(
             "db_type": db_type,
             "schema_ddl": state["schema_context"],
             "kg_context": state.get("kg_context", ""),
+            "grounding_hints": state.get("grounding_hints", ""),
             "previous_sql": state["generated_sql"],
             "error_message": error_message,
             "question": state["question"],

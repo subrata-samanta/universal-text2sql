@@ -33,11 +33,25 @@ class AgentState(TypedDict):
     # Auto-generated business glossary block for the relevant tables
     business_glossary: str
 
+    # Value/entity grounding hints: question terms matched against real
+    # column values (see knowledge.grounding.ValueGroundingIndex)
+    grounding_hints: str
+
+    # Rendered "Previous Turn(s)" block for multi-turn conversational
+    # follow-ups (see prompts.templates.build_conversation_context_block)
+    conversation_context: str
+
     # Estimated query complexity ("SIMPLE" | "MODERATE" | "COMPLEX")
     complexity: str
 
     # Candidate SQL queries generated this turn (self-consistency sampling)
     sql_candidates: list[str]
+
+    # Ordered sub-questions from query decomposition (DIN-SQL-style), when used
+    sub_questions: list[str]
+
+    # Per-sub-question {"sub_question", "sql_fragment"} pairs from decomposition
+    decomposition_steps: list[dict[str, str]]
 
     # Generated SQL query (current attempt / selected best candidate)
     generated_sql: str

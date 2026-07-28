@@ -45,3 +45,5 @@ jobs:
           pip install -e ".[dev]"
       - name: Run tests with coverage
         run: pytest tests/ -v --cov=universal_text2sql --cov-report=term-missing
+      - name: Run evaluation harness (mocked, zero API key)
+        run: python -m eval.cli --mock --fail-under 1.0
