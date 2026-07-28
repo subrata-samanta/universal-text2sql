@@ -7,6 +7,7 @@ Usage
     python main.py "How many customers?"  # single query mode
     python main.py --graph                # print the auto-built knowledge graph and exit
     python main.py --glossary             # print the auto-generated business glossary and exit
+    python main.py --grounding            # print the auto-profiled value grounding index and exit
 
 Environment
 -----------
@@ -100,6 +101,11 @@ def main() -> None:
     if "--glossary" in sys.argv:
         ctx = bootstrap()
         print(ctx.describe_glossary())
+        return
+
+    if "--grounding" in sys.argv:
+        ctx = bootstrap()
+        print(ctx.describe_grounding())
         return
 
     ctx = _setup()

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "universal-text2sql"
-version = "0.2.0"
+version = "0.3.0"
 description = "A universal, agentic Natural Language to SQL system that works against any database — auto schema discovery, auto knowledge graph, auto business glossary."
 readme = "README.md"
 license = { text = "MIT" }

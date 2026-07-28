@@ -57,6 +57,23 @@ cp .env.example .env
 # the full test suite runs without it.
 ```
 
+Some features are behind optional extras so the core install stays
+dependency-light — install them only if you're working on that area:
+
+```bash
+pip install -e ".[safety]"        # sqlglot, for AST-based SQL statement classification
+pip install -e ".[fuzzy]"         # rapidfuzz, for stronger value-grounding matching
+pip install -e ".[openai]"        # langchain-openai, for the OpenAI LLM provider
+pip install -e ".[anthropic]"     # langchain-anthropic, for the Anthropic LLM provider
+pip install -e ".[ollama]"        # langchain-ollama, for the local Ollama LLM provider
+pip install -e ".[all-providers]" # openai + anthropic + ollama together
+```
+
+Each optional dependency is lazy-imported (inside the function that needs
+it, never at module import time) with a clear `ImportError` naming the
+correct extra — the test suite must keep passing with **none** of these
+installed, so don't move an optional import to module scope.
+
 Optionally install the pre-commit hooks so formatting/linting issues are
 caught before you push:
 
@@ -70,18 +87,35 @@ pre-commit install
 pytest tests/ -v
 ```
 
-All 89+ tests run against an in-memory SQLite database and mock the LLM
+All 198+ tests run against an in-memory SQLite database and mock the LLM
 where one is needed, so the full suite runs with **no API key and no
 network access**. Please add or update tests for any behavior change —
 see the existing `tests/test_*.py` files for the patterns used (mocked
 `ChatGroq`-compatible LLMs via `langchain_core.runnables.RunnableLambda`,
-an in-memory seeded SQLite fixture, etc.).
+an in-memory seeded SQLite fixture, etc.). Tests that exercise an optional
+extra (e.g. sqlglot-based AST classification) use
+`pytest.importorskip(...)` so the suite still passes when that extra isn't
+installed.
 
 Run with coverage:
 
 ```bash
 pytest tests/ --cov=universal_text2sql --cov-report=term-missing
 ```
+
+If your change affects SQL generation quality (prompt tweaks, new context
+injected into the prompt, grounding/decomposition logic), also run the
+evaluation harness — a golden-question execution-accuracy regression suite
+that catches quality regressions unit tests won't:
+
+```bash
+make eval   # equivalent to: python -m eval.cli --mock
+```
+
+This runs in mocked-LLM mode (no API key needed) against
+`eval/golden/demo_db.jsonl` and is part of CI. If you add a genuinely new
+kind of question the agent should handle, consider adding a case to the
+golden set.
 
 ## Code style and linting
 
