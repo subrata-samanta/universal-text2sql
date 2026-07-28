@@ -47,6 +47,8 @@ SQL_GENERATION_PROMPT = ChatPromptTemplate.from_messages(
 
 {business_glossary}
 
+{grounding_hints}
+
 {few_shot_block}
 ## Question
 {question}
@@ -56,8 +58,11 @@ Think step-by-step:
 question doesn't literally match a column name).
 2. If tables must be joined, use the Table Relationships block for the exact join columns — \
 prefer a declared foreign key, then an inferred relationship, then a suggested multi-hop path.
-3. Determine what aggregations, filters, or joins are needed.
-4. Write the final SQL query.
+3. For filter literals, check the Value Grounding Hints block first — it shows the exact stored \
+spelling of values matched from the question (e.g. the question says "usa" but the real stored \
+value is "USA"); prefer these grounded values over guessing the literal yourself.
+4. Determine what aggregations, filters, or joins are needed.
+5. Write the final SQL query.
 
 SQL:""",
         ),
@@ -87,6 +92,8 @@ SQL_REFLECTION_PROMPT = ChatPromptTemplate.from_messages(
 
 {kg_context}
 
+{grounding_hints}
+
 ## Previous SQL Attempt
 ```sql
 {previous_sql}
@@ -98,8 +105,9 @@ SQL_REFLECTION_PROMPT = ChatPromptTemplate.from_messages(
 ## Question
 {question}
 
-Analyse the error carefully (check table/column names, and join columns against the Table \
-Relationships block if joins are involved), then rewrite the SQL to fix the problem.
+Analyse the error carefully (check table/column names, join columns against the Table \
+Relationships block if joins are involved, and filter literals against the Value Grounding \
+Hints block if present), then rewrite the SQL to fix the problem.
 Return ONLY the corrected SQL statement.
 
 Corrected SQL:""",

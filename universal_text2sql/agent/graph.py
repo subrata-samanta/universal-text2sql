@@ -62,6 +62,7 @@ from universal_text2sql.agent.state import AgentState
 from universal_text2sql.database.connector import DatabaseConnector
 from universal_text2sql.database.schema import DatabaseSchema
 from universal_text2sql.knowledge.graph import SchemaKnowledgeGraph
+from universal_text2sql.knowledge.grounding import ValueGroundingIndex
 from universal_text2sql.knowledge.metadata import MetadataEnricher
 from universal_text2sql.llm.base import LLMRunnable
 from universal_text2sql.llm.factory import get_llm
@@ -111,6 +112,7 @@ def build_graph(
     llm: LLMRunnable | None = None,
     knowledge_graph: SchemaKnowledgeGraph | None = None,
     metadata_enricher: MetadataEnricher | None = None,
+    grounding_index: ValueGroundingIndex | None = None,
     self_consistency_samples: int = _DEFAULT_SELF_CONSISTENCY_SAMPLES,
 ) -> Any:
     """Build and compile the LangGraph StateGraph.
@@ -129,6 +131,9 @@ def build_graph(
         metadata_enricher: Optional auto-generated business glossary, used to
             resolve business terms that don't literally match column names.
             See :mod:`universal_text2sql.knowledge.metadata`.
+        grounding_index: Optional value/entity grounding index, used to match
+            question terms against real column values for filter literals.
+            See :mod:`universal_text2sql.knowledge.grounding`.
         self_consistency_samples: How many SQL candidates to sample for
             questions classified as at least ``MODERATE`` complexity (``1``
             disables self-consistency and matches the original single-shot
@@ -151,6 +156,7 @@ def build_graph(
         memory=memory,
         knowledge_graph=knowledge_graph,
         metadata_enricher=metadata_enricher,
+        grounding_index=grounding_index,
     )
     _classify_complexity = functools.partial(classify_complexity, llm=llm)
     _generate_sql = functools.partial(
@@ -225,6 +231,7 @@ def run_query(
     llm: LLMRunnable | None = None,
     knowledge_graph: SchemaKnowledgeGraph | None = None,
     metadata_enricher: MetadataEnricher | None = None,
+    grounding_index: ValueGroundingIndex | None = None,
     self_consistency_samples: int = _DEFAULT_SELF_CONSISTENCY_SAMPLES,
 ) -> dict[str, Any]:
     """Run a single natural language question through the agent.
@@ -239,6 +246,7 @@ def run_query(
         llm=llm,
         knowledge_graph=knowledge_graph,
         metadata_enricher=metadata_enricher,
+        grounding_index=grounding_index,
         self_consistency_samples=self_consistency_samples,
     )
 
@@ -249,6 +257,7 @@ def run_query(
         "column_samples": "",
         "kg_context": "",
         "business_glossary": "",
+        "grounding_hints": "",
         "complexity": "",
         "sql_candidates": [],
         "few_shot_examples": [],

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 from dataclasses import asdict, dataclass, field
@@ -39,6 +40,25 @@ class TableMetadata:
 class DatabaseSchema:
     db_type: str
     tables: dict[str, TableMetadata] = field(default_factory=dict)
+
+    def signature(self) -> str:
+        """Deterministic string capturing table/column structure (not values).
+
+        Used as a disk-cache key by anything that derives expensive
+        per-database artifacts (LLM-generated glossary text, value
+        grounding profiles, ...) so re-running against the same database
+        is free, while a genuine schema change (new/renamed/retyped
+        column) invalidates the cache.
+        """
+        parts = [self.db_type]
+        for table_name in sorted(self.tables):
+            meta = self.tables[table_name]
+            col_sig = ",".join(f"{c.name}:{c.data_type}" for c in meta.columns)
+            parts.append(f"{table_name}[{col_sig}]")
+        return "|".join(parts)
+
+    def signature_hash(self) -> str:
+        return hashlib.sha256(self.signature().encode("utf-8")).hexdigest()[:16]
 
     def to_dict(self) -> dict[str, Any]:
         return {

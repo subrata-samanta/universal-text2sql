@@ -91,6 +91,21 @@ class TestSelectSchema:
         # column_samples should be a non-empty string
         assert isinstance(update["column_samples"], str)
 
+    def test_grounding_hints_empty_without_index(self, schema, memory):
+        state = _base_state()
+        state["question"] = "How many customers are from the USA?"
+        update = select_schema(state, schema=schema, memory=memory)
+        assert update["grounding_hints"] == ""
+
+    def test_grounding_hints_populated_with_index(self, schema, connector, memory, tmp_path):
+        from universal_text2sql.knowledge.grounding import ValueGroundingIndex
+
+        grounding_index = ValueGroundingIndex.build(schema, connector, cache_dir=tmp_path)
+        state = _base_state()
+        state["question"] = "How many customers are from the USA?"
+        update = select_schema(state, schema=schema, memory=memory, grounding_index=grounding_index)
+        assert "USA" in update["grounding_hints"]
+
 
 class TestExecuteSQL:
     def test_successful_execution(self, connector: DatabaseConnector):

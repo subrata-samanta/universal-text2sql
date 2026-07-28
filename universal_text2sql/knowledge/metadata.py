@@ -23,7 +23,6 @@ signature, so re-running against the same database is free.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import os
@@ -44,19 +43,6 @@ _WORD_SPLIT_RE = re.compile(r"[_\-]+|(?<=[a-z0-9])(?=[A-Z])")
 def _humanize(identifier: str) -> str:
     words = [w for w in _WORD_SPLIT_RE.split(identifier) if w]
     return " ".join(w.lower() for w in words)
-
-
-def _schema_signature(schema: DatabaseSchema) -> str:
-    parts = [schema.db_type]
-    for table_name in sorted(schema.tables):
-        meta = schema.tables[table_name]
-        col_sig = ",".join(f"{c.name}:{c.data_type}" for c in meta.columns)
-        parts.append(f"{table_name}[{col_sig}]")
-    return "|".join(parts)
-
-
-def _schema_hash(schema: DatabaseSchema) -> str:
-    return hashlib.sha256(_schema_signature(schema).encode("utf-8")).hexdigest()[:16]
 
 
 class MetadataEnricher:
@@ -216,7 +202,7 @@ class MetadataEnricher:
     # ------------------------------------------------------------------
 
     def _cache_path(self, schema: DatabaseSchema) -> Path:
-        return self.cache_dir / f"{_schema_hash(schema)}.json"
+        return self.cache_dir / f"{schema.signature_hash()}.json"
 
     def _load_cache(self, schema: DatabaseSchema) -> dict[str, Any] | None:
         path = self._cache_path(schema)

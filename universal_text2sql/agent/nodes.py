@@ -31,6 +31,7 @@ from universal_text2sql.agent.state import AgentState
 from universal_text2sql.database.connector import DatabaseConnector
 from universal_text2sql.database.schema import DatabaseSchema
 from universal_text2sql.knowledge.graph import SchemaKnowledgeGraph
+from universal_text2sql.knowledge.grounding import ValueGroundingIndex
 from universal_text2sql.knowledge.metadata import MetadataEnricher
 from universal_text2sql.llm.base import LLMRunnable
 from universal_text2sql.prompts.templates import (
@@ -77,6 +78,7 @@ def select_schema(
     memory: QueryMemory,
     knowledge_graph: SchemaKnowledgeGraph | None = None,
     metadata_enricher: MetadataEnricher | None = None,
+    grounding_index: ValueGroundingIndex | None = None,
 ) -> dict[str, Any]:
     """Identify relevant tables and build prompt context.
 
@@ -87,7 +89,9 @@ def select_schema(
     :class:`SchemaKnowledgeGraph` is supplied, the relevant tables' join
     relationships (declared, inferred, or multi-hop) are rendered into
     ``kg_context``; when a :class:`MetadataEnricher` is supplied, the
-    business-glossary block is rendered into ``business_glossary``.
+    business-glossary block is rendered into ``business_glossary``; when a
+    :class:`ValueGroundingIndex` is supplied, question terms matched
+    against real column values are rendered into ``grounding_hints``.
     """
     question = state["question"]
 
@@ -110,6 +114,10 @@ def select_schema(
     if metadata_enricher is not None:
         business_glossary = metadata_enricher.glossary_block(schema, relevant)
 
+    grounding_hints = ""
+    if grounding_index is not None:
+        grounding_hints = grounding_index.hints_block(grounding_index.match(question, relevant))
+
     # Retrieve few-shot examples from memory
     few_shot = memory.get_similar(question, top_k=3)
 
@@ -121,6 +129,7 @@ def select_schema(
         "column_samples": column_samples,
         "kg_context": kg_context,
         "business_glossary": business_glossary,
+        "grounding_hints": grounding_hints,
         "few_shot_examples": few_shot,
         "messages": [HumanMessage(content=f"Processing question: {question}")],
     }
@@ -155,6 +164,7 @@ def generate_sql(
         "column_samples": state["column_samples"],
         "kg_context": state.get("kg_context", ""),
         "business_glossary": state.get("business_glossary", ""),
+        "grounding_hints": state.get("grounding_hints", ""),
         "few_shot_block": few_shot_block,
         "question": state["question"],
     }
@@ -348,6 +358,7 @@ def reflect(
             "db_type": db_type,
             "schema_ddl": state["schema_context"],
             "kg_context": state.get("kg_context", ""),
+            "grounding_hints": state.get("grounding_hints", ""),
             "previous_sql": state["generated_sql"],
             "error_message": error_message,
             "question": state["question"],

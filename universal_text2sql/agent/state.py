@@ -33,6 +33,10 @@ class AgentState(TypedDict):
     # Auto-generated business glossary block for the relevant tables
     business_glossary: str
 
+    # Value/entity grounding hints: question terms matched against real
+    # column values (see knowledge.grounding.ValueGroundingIndex)
+    grounding_hints: str
+
     # Estimated query complexity ("SIMPLE" | "MODERATE" | "COMPLEX")
     complexity: str
 
