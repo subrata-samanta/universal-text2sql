@@ -81,6 +81,7 @@ def bootstrap(
     seed_demo: bool = True,
     max_retries: int | None = None,
     self_consistency_samples: int | None = None,
+    read_only: bool | None = None,
 ) -> AgentContext:
     """Connect to *any* SQLAlchemy-supported database and prepare the agent.
 
@@ -107,6 +108,10 @@ def bootstrap(
         self_consistency_samples: SQL candidates sampled for non-trivial
             questions. Defaults to ``SELF_CONSISTENCY_SAMPLES`` (``1``,
             i.e. self-consistency disabled, since it multiplies LLM calls).
+        read_only: Whether the connector enforces read-only SQL (blocking
+            LLM-generated INSERT/UPDATE/DELETE/DDL). Defaults to the
+            ``SQL_READ_ONLY`` env var (``True``) — see
+            :mod:`universal_text2sql.database.safety`.
 
     Returns:
         A ready-to-use :class:`AgentContext`.
@@ -114,7 +119,7 @@ def bootstrap(
     db_url = database_url or os.getenv("DATABASE_URL", "sqlite:///:memory:")
     logger.info("Bootstrapping universal text-to-SQL agent for %s", db_url)
 
-    connector = DatabaseConnector(db_url)
+    connector = DatabaseConnector(db_url, read_only=read_only)
 
     if seed_demo and not connector.get_table_names():
         from universal_text2sql.utils.demo_data import seed_demo_database

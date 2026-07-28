@@ -227,6 +227,9 @@ def _result_signature(df: pd.DataFrame | None) -> str:
         return str(df)
 
 
+_SELF_CONSISTENCY_PREVIEW_LIMIT = 200
+
+
 def select_best_candidate(
     state: AgentState,
     connector: DatabaseConnector,
@@ -236,6 +239,11 @@ def select_best_candidate(
     A no-op (returns ``{}``) when only one candidate was generated — the
     overwhelmingly common case — so the ``execute_sql``/``reflect`` loop
     behaves exactly as it did before self-consistency sampling existed.
+
+    Candidate executions are capped with ``limit=`` (they're only used to
+    vote on which SQL text wins, not returned to the user) — the winning
+    query is re-executed unbounded by ``execute_sql`` afterwards, so this
+    never truncates the actual answer.
     """
     candidates = state.get("sql_candidates") or []
     if len(candidates) <= 1:
@@ -245,7 +253,7 @@ def select_best_candidate(
     first_error: tuple[str, str] | None = None
     for sql in candidates:
         try:
-            df = connector.execute_query(sql)
+            df = connector.execute_query(sql, limit=_SELF_CONSISTENCY_PREVIEW_LIMIT)
             groups.setdefault(_result_signature(df), []).append(sql)
         except Exception as exc:
             if first_error is None:

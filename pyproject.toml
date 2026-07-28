@@ -46,6 +46,13 @@ dev = [
     "ruff>=0.6.0",
     "pre-commit>=3.7.0",
 ]
+# Stronger, AST-based SQL statement classification for the read-only safety
+# guardrail (universal_text2sql.database.safety). Optional: the zero-dependency
+# regex baseline is always active; sqlglot adds robustness against CTE-wrapped
+# writes and similar cases the regex baseline can't fully see.
+safety = [
+    "sqlglot>=25.0.0",
+]
 
 [project.urls]
 Homepage = "https://github.com/subrata-samanta/universal-text2sql"
